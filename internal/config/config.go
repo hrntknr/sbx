@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	yaml "gopkg.in/yaml.v3"
@@ -17,9 +18,16 @@ type Rule struct {
 	Path   string
 }
 
+type Profile struct {
+	Name  string
+	Rules []Rule
+	Env   map[string]string
+}
+
 type profileConfig struct {
-	Name  string   `yaml:"name"`
-	Rules []string `yaml:"rules"`
+	Name  string            `yaml:"name"`
+	Rules []string          `yaml:"rules"`
+	Env   map[string]string `yaml:"env"`
 }
 
 func Load(path string) ([]Rule, error) {
@@ -27,44 +35,52 @@ func Load(path string) ([]Rule, error) {
 }
 
 func LoadProfile(path, profile string) ([]Rule, error) {
+	p, err := LoadSelectedProfile(path, profile)
+	if err != nil {
+		return nil, err
+	}
+	return p.Rules, nil
+}
+
+func LoadSelectedProfile(path, profile string) (Profile, error) {
 	if path == "" {
 		path = defaultPath()
 	}
 	if path == "" {
-		return nil, nil
+		return Profile{}, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return Profile{}, err
 	}
-	lines, err := loadLines(data, profile)
+	p, err := loadProfile(data, profile)
 	if err != nil {
-		return nil, err
+		return Profile{}, err
 	}
-	rules := make([]Rule, len(lines))
-	for i, l := range lines {
+	rules := make([]Rule, len(p.Rules))
+	for i, l := range p.Rules {
 		r, err := Parse(l)
 		if err != nil {
-			return nil, fmt.Errorf("%s line %d: %w", path, i+1, err)
+			return Profile{}, fmt.Errorf("%s line %d: %w", path, i+1, err)
 		}
 		rules[i] = r
 	}
-	return rules, nil
+	return Profile{Name: p.Name, Rules: rules, Env: p.Env}, nil
 }
 
-func loadLines(data []byte, profile string) ([]string, error) {
+func loadProfile(data []byte, profile string) (profileConfig, error) {
 	if profile == "" {
 		profile = "default"
 	}
 	docs, err := documentNodes(data)
 	if err != nil {
-		return nil, err
+		return profileConfig{}, err
 	}
 	if len(docs) > 1 {
 		return documentProfileLines(docs, profile)
 	}
 	if len(docs) == 0 {
-		return nil, nil
+		return profileConfig{Name: profile}, nil
 	}
 	return nodeLines(docs[0], profile)
 }
@@ -88,44 +104,45 @@ func documentNodes(data []byte) ([]*yaml.Node, error) {
 	return docs, nil
 }
 
-func documentProfileLines(docs []*yaml.Node, profile string) ([]string, error) {
+func documentProfileLines(docs []*yaml.Node, profile string) (profileConfig, error) {
 	for _, doc := range docs {
 		if !isProfileNode(doc) {
-			return nil, fmt.Errorf("invalid multi-document config (expected profile documents)")
+			return profileConfig{}, fmt.Errorf("invalid multi-document config (expected profile documents)")
 		}
-		lines, err := singleProfileLines(doc, profile)
+		p, err := singleProfile(doc, profile)
 		if err == nil {
-			return lines, nil
+			return p, nil
 		}
 	}
-	return nil, fmt.Errorf("profile %q not found", profile)
+	return profileConfig{}, fmt.Errorf("profile %q not found", profile)
 }
 
-func nodeLines(node *yaml.Node, profile string) ([]string, error) {
+func nodeLines(node *yaml.Node, profile string) (profileConfig, error) {
 	switch node.Kind {
 	case yaml.SequenceNode:
 		if isProfileList(node) {
-			return profileLines(node, profile)
+			return listProfile(node, profile)
 		}
 		if profile != "default" {
-			return nil, fmt.Errorf("profile %q not found", profile)
+			return profileConfig{}, fmt.Errorf("profile %q not found", profile)
 		}
-		return decodeLines(node)
+		lines, err := decodeLines(node)
+		return profileConfig{Name: profile, Rules: lines}, err
 	case yaml.MappingNode:
 		if isProfileNode(node) {
-			return singleProfileLines(node, profile)
+			return singleProfile(node, profile)
 		}
 		profiles, err := profilesNode(node)
 		if err != nil {
-			return nil, err
+			return profileConfig{}, err
 		}
 		lines, ok := profiles[profile]
 		if !ok {
-			return nil, fmt.Errorf("profile %q not found", profile)
+			return profileConfig{}, fmt.Errorf("profile %q not found", profile)
 		}
-		return lines, nil
+		return profileConfig{Name: profile, Rules: lines}, nil
 	default:
-		return nil, fmt.Errorf("invalid config format (expected rule list or profiles map)")
+		return profileConfig{}, fmt.Errorf("invalid config format (expected rule list or profiles map)")
 	}
 }
 
@@ -147,28 +164,28 @@ func isProfileNode(node *yaml.Node) bool {
 	return hasName && hasRules
 }
 
-func singleProfileLines(node *yaml.Node, profile string) ([]string, error) {
+func singleProfile(node *yaml.Node, profile string) (profileConfig, error) {
 	var p profileConfig
 	if err := node.Decode(&p); err != nil {
-		return nil, err
+		return profileConfig{}, err
 	}
 	if p.Name != profile {
-		return nil, fmt.Errorf("profile %q not found", profile)
+		return profileConfig{}, fmt.Errorf("profile %q not found", profile)
 	}
-	return p.Rules, nil
+	return p, nil
 }
 
-func profileLines(node *yaml.Node, profile string) ([]string, error) {
+func listProfile(node *yaml.Node, profile string) (profileConfig, error) {
 	var profiles []profileConfig
 	if err := node.Decode(&profiles); err != nil {
-		return nil, err
+		return profileConfig{}, err
 	}
 	for _, p := range profiles {
 		if p.Name == profile {
-			return p.Rules, nil
+			return p, nil
 		}
 	}
-	return nil, fmt.Errorf("profile %q not found", profile)
+	return profileConfig{}, fmt.Errorf("profile %q not found", profile)
 }
 
 func profilesNode(node *yaml.Node) (map[string][]string, error) {
@@ -245,20 +262,63 @@ func ParseMode(s string) (read, write bool, err error) {
 	return false, false, fmt.Errorf("invalid mode %q (must be r, w, or rw)", s)
 }
 
-func Expander() func(string) string {
+func EnvList(env map[string]string, expand func(string) string) []string {
+	overrides := make(map[string]string, len(env))
+	for k, v := range env {
+		overrides[k] = expand(v)
+	}
+	out := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, entry := range os.Environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if value, exists := overrides[key]; exists {
+				out = append(out, key+"="+value)
+				delete(overrides, key)
+				continue
+			}
+		}
+		out = append(out, entry)
+	}
+	keys := make([]string, 0, len(overrides))
+	for k := range overrides {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, k+"="+overrides[k])
+	}
+	return out
+}
+
+func Expander(env ...map[string]string) func(string) string {
 	cwd, _ := os.Getwd()
 	tmp := os.TempDir()
 	home, _ := os.UserHomeDir()
 	vars := map[string]string{"WORK_DIR": cwd, "TMP_DIR": tmp, "HOME": home}
+	for _, e := range env {
+		for k, v := range e {
+			vars[k] = v
+		}
+	}
+	var resolve func(string, map[string]bool) string
+	resolve = func(k string, seen map[string]bool) string {
+		if seen[k] {
+			return ""
+		}
+		if v, ok := vars[k]; ok {
+			seen[k] = true
+			return os.Expand(v, func(name string) string {
+				return resolve(name, seen)
+			})
+		}
+		return os.Getenv(k)
+	}
 	return func(s string) string {
 		if s == "~" || strings.HasPrefix(s, "~/") {
 			s = home + s[1:]
 		}
 		return os.Expand(s, func(k string) string {
-			if v, ok := vars[k]; ok {
-				return v
-			}
-			return os.Getenv(k)
+			return resolve(k, map[string]bool{})
 		})
 	}
 }

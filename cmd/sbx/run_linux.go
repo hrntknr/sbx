@@ -11,7 +11,7 @@ import (
 	"github.com/hrntknr/sbx/internal/config"
 )
 
-func run(rules []config.Rule, expand func(string) string, dump bool, args []string) {
+func run(rules []config.Rule, expand func(string) string, env []string, dump bool, args []string) {
 	bargs, err := bubblewrap.Build(rules, expand)
 	if err != nil {
 		fail(err)
@@ -20,7 +20,7 @@ func run(rules []config.Rule, expand func(string) string, dump bool, args []stri
 		fmt.Println(strings.Join(append([]string{"bwrap"}, bargs...), " "))
 		return
 	}
-	code, err := bubblewrap.Run(bargs, args)
+	code, err := bubblewrap.Run(bargs, args, env)
 	if err != nil {
 		fail(err)
 	}

@@ -149,8 +149,9 @@ func globToRegex(s string) string {
 // Run executes the given command under sandbox-exec with the profile.
 // Returns the child's exit code (or 0). Non-nil error means the child
 // could not be started.
-func Run(profile string, args []string) (int, error) {
+func Run(profile string, args, env []string) (int, error) {
 	cmd := exec.Command("sandbox-exec", append([]string{"-p", profile}, args...)...)
+	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError

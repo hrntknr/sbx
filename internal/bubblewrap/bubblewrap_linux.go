@@ -97,10 +97,11 @@ func expandPaths(p string) []string {
 
 // Run invokes bwrap with the given args and command. Returns the child's
 // exit code. A non-nil error means bwrap could not be started.
-func Run(bwrapArgs, cmd []string) (int, error) {
+func Run(bwrapArgs, cmd, env []string) (int, error) {
 	full := append(append([]string{}, bwrapArgs...), "--")
 	full = append(full, cmd...)
 	c := exec.Command("bwrap", full...)
+	c.Env = env
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := c.Run(); err != nil {
 		var ee *exec.ExitError

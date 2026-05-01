@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -117,10 +118,15 @@ func TestLoadProfileDocuments(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sbx.yaml")
 	data := []byte(`
 name: default
+env:
+  SBX_MODE: default
+  CACHE_DIR: ${TMP_DIR}/sbx
 rules:
   - allow(rw, ${WORK_DIR})
 ---
 name: test
+env:
+  SBX_MODE: test
 rules:
   - deny(rw, ~/.*)
 `)
@@ -143,6 +149,14 @@ rules:
 	if len(got) != 1 || got[0] != (Rule{"deny", "rw", "~/.*"}) {
 		t.Fatalf("LoadProfile test = %+v", got)
 	}
+
+	p, err := LoadSelectedProfile(path, "test")
+	if err != nil {
+		t.Fatalf("LoadSelectedProfile test: %v", err)
+	}
+	if p.Env["SBX_MODE"] != "test" {
+		t.Fatalf("SBX_MODE = %q, want test", p.Env["SBX_MODE"])
+	}
 }
 
 func TestLoadProfileLegacyList(t *testing.T) {
@@ -164,5 +178,45 @@ func TestLoadProfileLegacyList(t *testing.T) {
 	}
 	if _, err := LoadProfile(path, "locked"); err == nil {
 		t.Fatal("LoadProfile legacy locked: expected error")
+	}
+}
+
+func TestExpanderUsesProfileEnv(t *testing.T) {
+	dir := t.TempDir()
+	env := map[string]string{"CACHE_DIR": dir, "NESTED": "${CACHE_DIR}/nested"}
+	expand := Expander(env)
+
+	if got := expand("${CACHE_DIR}/file"); got != dir+"/file" {
+		t.Fatalf("expand CACHE_DIR = %q, want %q", got, dir+"/file")
+	}
+	if got := expand("${NESTED}/file"); got != dir+"/nested/file" {
+		t.Fatalf("expand NESTED = %q, want %q", got, dir+"/nested/file")
+	}
+}
+
+func TestEnvListAddsExpandedProfileEnv(t *testing.T) {
+	t.Setenv("CACHE_DIR", "/old")
+	dir := t.TempDir()
+	env := map[string]string{"CACHE_DIR": dir, "NESTED": "${CACHE_DIR}/nested"}
+	expand := Expander(env)
+	got := EnvList(env, expand)
+
+	values := map[string]string{}
+	counts := map[string]int{}
+	for _, entry := range got {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[key] = value
+			counts[key]++
+		}
+	}
+	if values["CACHE_DIR"] != dir {
+		t.Fatalf("CACHE_DIR = %q, want %q", values["CACHE_DIR"], dir)
+	}
+	if counts["CACHE_DIR"] != 1 {
+		t.Fatalf("CACHE_DIR count = %d, want 1", counts["CACHE_DIR"])
+	}
+	if values["NESTED"] != dir+"/nested" {
+		t.Fatalf("NESTED = %q, want %q", values["NESTED"], dir+"/nested")
 	}
 }

@@ -31,12 +31,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	rules, err := config.LoadProfile(configPath, profile)
+	selected, err := config.LoadSelectedProfile(configPath, profile)
 	if err != nil {
 		fail(err)
 	}
-	expand := config.Expander()
-	run(rules, expand, dump, args)
+	expand := config.Expander(selected.Env)
+	env := config.EnvList(selected.Env, expand)
+	run(selected.Rules, expand, env, dump, args)
 }
 
 func commandOptions(args []string, flags *flag.FlagSet) ([]string, error) {

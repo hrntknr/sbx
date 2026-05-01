@@ -4,3 +4,14 @@ rules:
   - allow(rw, ${TMP_DIR})
   - deny(rw, ~/.*)
   - allow(r, /)
+---
+name: k8s
+rules:
+  - allow(rw, ${WORK_DIR})
+  - allow(rw, ${TMP_DIR})
+  - allow(r, ~/.kube/kuberc)
+  - allow(r, ~/.kube/config)
+  - deny(rw, ~/.*)
+  - allow(r, /)
+env:
+  KUBECONFIG: $HOME/.kube/config
