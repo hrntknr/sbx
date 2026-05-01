@@ -35,12 +35,16 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
+            archive: tar.gz
           - goos: linux
             goarch: arm64
+            archive: tar.gz
           - goos: darwin
             goarch: amd64
+            archive: zip
           - goos: darwin
             goarch: arm64
+            archive: zip
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,12 +69,16 @@ jobs:
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          ARCHIVE: ${{ matrix.archive }}
         run: |
           asset="sbx_${TAG_NAME}_${GOOS}_${GOARCH}"
           mkdir -p "dist/${asset}"
           cp dist/sbx "dist/${asset}/sbx"
-          tar -C dist -czf "dist/${asset}.tar.gz" "${asset}"
-          (cd dist && zip -qr "${asset}.zip" "${asset}")
+          if [ "${ARCHIVE}" = "tar.gz" ]; then
+            tar -C dist -czf "dist/${asset}.tar.gz" "${asset}"
+          else
+            (cd dist && zip -qr "${asset}.zip" "${asset}")
+          fi
 
       - name: Upload assets
         env:
@@ -78,9 +86,7 @@ jobs:
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          ARCHIVE: ${{ matrix.archive }}
         run: |
           asset="sbx_${TAG_NAME}_${GOOS}_${GOARCH}"
-          gh release upload "${TAG_NAME}" \
-            "dist/${asset}.tar.gz" \
-            "dist/${asset}.zip" \
-            --clobber
+          gh release upload "${TAG_NAME}" "dist/${asset}.${ARCHIVE}" --clobber
