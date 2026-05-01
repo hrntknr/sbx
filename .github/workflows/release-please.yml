@@ -66,12 +66,11 @@ jobs:
 
       - name: Package assets
         env:
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           ARCHIVE: ${{ matrix.archive }}
         run: |
-          asset="sbx_${TAG_NAME}_${GOOS}_${GOARCH}"
+          asset="sbx_${GOOS}_${GOARCH}"
           mkdir -p "dist/${asset}"
           cp dist/sbx "dist/${asset}/sbx"
           if [ "${ARCHIVE}" = "tar.gz" ]; then
@@ -88,5 +87,5 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           ARCHIVE: ${{ matrix.archive }}
         run: |
-          asset="sbx_${TAG_NAME}_${GOOS}_${GOARCH}"
+          asset="sbx_${GOOS}_${GOARCH}"
           gh release upload "${TAG_NAME}" "dist/${asset}.${ARCHIVE}" --clobber
