@@ -4,12 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"runtime"
-	"strings"
 
-	"github.com/hrntknr/sbx/internal/bubblewrap"
 	"github.com/hrntknr/sbx/internal/config"
-	"github.com/hrntknr/sbx/internal/seatbelt"
 )
 
 func main() {
@@ -33,48 +29,7 @@ func main() {
 		fail(err)
 	}
 	expand := config.Expander()
-
-	switch runtime.GOOS {
-	case "darwin":
-		runDarwin(rules, expand, dump, args)
-	case "linux":
-		runLinux(rules, expand, dump, args)
-	default:
-		fmt.Fprintln(os.Stderr, "sbx: only darwin and linux are supported")
-		os.Exit(1)
-	}
-}
-
-func runDarwin(rules []config.Rule, expand func(string) string, dump bool, args []string) {
-	profile, err := seatbelt.Build(rules, expand)
-	if err != nil {
-		fail(err)
-	}
-	if dump {
-		fmt.Print(profile)
-		return
-	}
-	code, err := seatbelt.Run(profile, args)
-	if err != nil {
-		fail(err)
-	}
-	os.Exit(code)
-}
-
-func runLinux(rules []config.Rule, expand func(string) string, dump bool, args []string) {
-	bargs, err := bubblewrap.Build(rules, expand)
-	if err != nil {
-		fail(err)
-	}
-	if dump {
-		fmt.Println(strings.Join(append([]string{"bwrap"}, bargs...), " "))
-		return
-	}
-	code, err := bubblewrap.Run(bargs, args)
-	if err != nil {
-		fail(err)
-	}
-	os.Exit(code)
+	run(rules, expand, dump, args)
 }
 
 func fail(err error) {
