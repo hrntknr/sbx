@@ -1,0 +1,4 @@
+- allow(rw, ${WORK_DIR})
+- allow(rw, ${TMP_DIR})
+- deny(rw, ~/.*)
+- allow(r, /)
