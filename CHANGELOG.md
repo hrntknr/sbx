@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.0](https://github.com/hrntknr/sbx/compare/sbx-v1.2.0...sbx-v1.3.0) (2026-05-02)
+
+
+### Features
+
+* always allow tmp paths in sandbox ([081665d](https://github.com/hrntknr/sbx/commit/081665d4bf2501093a64cc2a150a5557e71101b0))
+
+
+### Bug Fixes
+
+* **k8s:** register in-tree client-go auth providers ([#6](https://github.com/hrntknr/sbx/issues/6)) ([42a8904](https://github.com/hrntknr/sbx/commit/42a89041a37a5c6c9b0dd901d8d936c4eb6258a3))
+
 ## [1.2.0](https://github.com/hrntknr/sbx/compare/sbx-v1.1.0...sbx-v1.2.0) (2026-05-02)
 
 
