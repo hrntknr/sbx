@@ -264,6 +264,10 @@ func TestLoadSelectedProfileFallsBackToDefault(t *testing.T) {
 	}
 	want := []Rule{
 		{Action: "allow", Mode: "rw", Path: "${WORK_DIR}"},
+		{Action: "allow", Mode: "rw", Path: "~/.claude"},
+		{Action: "allow", Mode: "rw", Path: "~/.claude.json"},
+		{Action: "allow", Mode: "rw", Path: "~/.codex"},
+		{Action: "deny", Mode: "rw", Path: "~/.kube/config"},
 		{Action: "allow", Mode: "r", Path: "/"},
 	}
 	if len(p.Rules) != len(want) {
