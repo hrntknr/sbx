@@ -16,7 +16,7 @@ import (
 // non-file ops + file metadata/xattr are always permitted so stat-heavy tools
 // (find, ls -l, IDEs, build systems' XDG lookups) work under (deny default).
 // User read/write rules govern only file content (file-read-data / file-write*).
-const baseProfile = `(version 1)
+const baseProfilePrefix = `(version 1)
 (deny default)
 (allow network*)
 (allow process*)
@@ -29,20 +29,45 @@ const baseProfile = `(version 1)
 (allow system-fsctl)
 (allow file-read-metadata)
 (allow file-read-xattr)
+(allow file-read-data
+    (literal "/dev/null")
+    (literal "/dev/zero")
+    (literal "/dev/random")
+    (literal "/dev/urandom")
+    (literal "/dev/tty")
+    (literal "/dev/stdin")
+    (literal "/dev/stdout")
+    (literal "/dev/stderr")
+    (subpath "/dev/fd"))
 (allow file-write-data
     (literal "/dev/null")
     (literal "/dev/zero")
     (literal "/dev/random")
     (literal "/dev/urandom")
     (literal "/dev/tty")
+    (literal "/dev/stdin")
     (literal "/dev/stdout")
     (literal "/dev/stderr")
-    (literal "/dev/dtracehelper"))
+    (literal "/dev/dtracehelper")
+    (subpath "/dev/fd"))
 `
+
+// baseProfile is the seatbelt prologue: static prefix plus implicit tmp
+// allows. The tmp allows are emitted before user rules so user denies
+// override (seatbelt is last-match-wins).
+func baseProfile() string {
+	var b strings.Builder
+	b.WriteString(baseProfilePrefix)
+	for _, p := range config.ImplicitTmpPaths() {
+		fmt.Fprintf(&b, "(allow file-read-data (subpath %q))\n", p)
+		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", p)
+	}
+	return b.String()
+}
 
 func Build(rules []config.Rule, expand func(string) string) (string, error) {
 	var b strings.Builder
-	b.WriteString(baseProfile)
+	b.WriteString(baseProfile())
 	// first-match-wins → reverse to seatbelt's last-match-wins
 	for i := len(rules) - 1; i >= 0; i-- {
 		if err := emitRule(&b, rules[i], expand); err != nil {

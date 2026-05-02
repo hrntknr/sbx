@@ -34,18 +34,86 @@ func TestBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Reversed for last-mount-wins: allow(r,/) → deny file → deny dir → allow rw dir → base.
+	// Order: user rules reversed (first-match-wins), implicit tmp binds,
+	// user tmp rules re-emitted so explicit denies still override the
+	// implicit allow, then baseArgs.
 	want := []string{
 		"--ro-bind-try", "/", "/",
+		"--ro-bind", "/dev/null", file,
+		"--tmpfs", subDir,
+		"--bind-try", dir, dir,
+	}
+	for _, p := range config.ImplicitTmpPaths() {
+		want = append(want, "--bind-try", p, p)
+	}
+	want = append(want,
 		"--ro-bind", "/dev/null", file,
 		"--tmpfs", subDir,
 		"--bind-try", dir, dir,
 		"--proc", "/proc",
 		"--dev", "/dev",
 		"--die-with-parent",
-	}
+	)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("\ngot:  %v\nwant: %v", got, want)
+	}
+}
+
+func TestBuildImplicitTmpAfterBroadRoot(t *testing.T) {
+	rules := []config.Rule{{Action: "allow", Mode: "r", Path: "/"}}
+	got, err := Build(rules, func(s string) string { return s })
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootIdx := -1
+	for i := 0; i+2 < len(got); i++ {
+		if got[i] == "--ro-bind-try" && got[i+1] == "/" && got[i+2] == "/" {
+			rootIdx = i
+			break
+		}
+	}
+	if rootIdx == -1 {
+		t.Fatal("missing --ro-bind-try / /")
+	}
+	for _, p := range config.ImplicitTmpPaths() {
+		idx := -1
+		for i := rootIdx + 3; i+2 < len(got); i++ {
+			if got[i] == "--bind-try" && got[i+1] == p && got[i+2] == p {
+				idx = i
+				break
+			}
+		}
+		if idx == -1 {
+			t.Errorf("implicit tmp bind for %q must appear after --ro-bind-try / / (got %v)", p, got)
+		}
+	}
+}
+
+func TestBuildExplicitTmpDenyOverridesImplicit(t *testing.T) {
+	rules := []config.Rule{
+		{Action: "deny", Mode: "rw", Path: "/tmp"},
+		{Action: "allow", Mode: "r", Path: "/"},
+	}
+	got, err := Build(rules, func(s string) string { return s })
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Find the LAST mount targeting /tmp; explicit deny should win.
+	lastTmpAction := ""
+	for i := 0; i+1 < len(got); i++ {
+		switch got[i] {
+		case "--tmpfs":
+			if got[i+1] == "/tmp" {
+				lastTmpAction = "deny"
+			}
+		case "--bind-try":
+			if i+2 < len(got) && got[i+1] == "/tmp" && got[i+2] == "/tmp" {
+				lastTmpAction = "allow"
+			}
+		}
+	}
+	if lastTmpAction != "deny" {
+		t.Errorf("last mount on /tmp should be the user deny, got %q (args=%v)", lastTmpAction, got)
 	}
 }
 

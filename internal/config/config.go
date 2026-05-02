@@ -152,10 +152,38 @@ func defaultProfile() Profile {
 		K8s:  &K8sProfile{},
 		Rules: []Rule{
 			{Action: "allow", Mode: "rw", Path: "${WORK_DIR}"},
-			{Action: "allow", Mode: "rw", Path: "${TMP_DIR}"},
+			{Action: "allow", Mode: "rw", Path: "~/.claude"},
+			{Action: "allow", Mode: "rw", Path: "~/.claude.json"},
+			{Action: "allow", Mode: "rw", Path: "~/.codex"},
+			{Action: "deny", Mode: "rw", Path: "~/.kube/config"},
 			{Action: "allow", Mode: "r", Path: "/"},
 		},
 	}
+}
+
+// ImplicitTmpPaths returns canonical temp directories the sandbox always
+// allows read/write on, regardless of user rules: the system /tmp (which on
+// macOS is a symlink to /private/tmp) and os.TempDir() (the per-user temp
+// dir, e.g. /var/folders/.../T or whatever $TMPDIR points to). Symlinks are
+// resolved; duplicates are removed.
+func ImplicitTmpPaths() []string {
+	raw := []string{"/tmp", os.TempDir()}
+	seen := make(map[string]bool, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, p := range raw {
+		p = strings.TrimRight(p, "/")
+		if p == "" {
+			continue
+		}
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			p = r
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // selectProfile decodes data as a stream of YAML documents, returning the
@@ -187,7 +215,7 @@ func selectProfile(data []byte, profile string) (rawProfile, error) {
 }
 
 func defaultPath() string {
-	for _, p := range []string{"sbx.yaml", filepath.Join(os.Getenv("HOME"), ".sbx.yaml")} {
+	for _, p := range []string{".sbx.yaml", filepath.Join(os.Getenv("HOME"), ".sbx.yaml")} {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
@@ -259,12 +287,11 @@ func EnvList(env map[string]string, expand func(string) string) []string {
 
 // Expander returns a function that expands ${VAR} and ~ in a string. VARs
 // are looked up in the supplied env maps (later maps override earlier),
-// then in built-ins WORK_DIR/TMP_DIR/HOME, then in os.Environ.
+// then in built-ins WORK_DIR/HOME, then in os.Environ.
 func Expander(env ...map[string]string) func(string) string {
 	cwd, _ := os.Getwd()
-	tmp := os.TempDir()
 	home, _ := os.UserHomeDir()
-	vars := map[string]string{"WORK_DIR": cwd, "TMP_DIR": tmp, "HOME": home}
+	vars := map[string]string{"WORK_DIR": cwd, "HOME": home}
 	for _, e := range env {
 		for k, v := range e {
 			vars[k] = v

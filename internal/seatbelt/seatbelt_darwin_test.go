@@ -56,7 +56,8 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(got, baseProfile) {
+	base := baseProfile()
+	if !strings.HasPrefix(got, base) {
 		t.Fatal("missing base profile")
 	}
 	// user rules should be emitted in reverse (last-match-wins for seatbelt).
@@ -66,8 +67,25 @@ func TestBuild(t *testing.T) {
 (allow file-read-data (subpath "/work"))
 (allow file-write* (subpath "/work"))
 `
-	if user := strings.TrimPrefix(got, baseProfile); user != want {
+	if user := strings.TrimPrefix(got, base); user != want {
 		t.Errorf("user rules mismatch\n--- got ---\n%s\n--- want ---\n%s", user, want)
+	}
+}
+
+func TestBaseProfileImplicitTmp(t *testing.T) {
+	got := baseProfile()
+	if !strings.HasPrefix(got, baseProfilePrefix) {
+		t.Fatal("missing base profile prefix")
+	}
+	for _, p := range config.ImplicitTmpPaths() {
+		readRule := `(allow file-read-data (subpath "` + p + `"))`
+		writeRule := `(allow file-write* (subpath "` + p + `"))`
+		if !strings.Contains(got, readRule) {
+			t.Errorf("base profile missing %q\n%s", readRule, got)
+		}
+		if !strings.Contains(got, writeRule) {
+			t.Errorf("base profile missing %q\n%s", writeRule, got)
+		}
 	}
 }
 

@@ -27,20 +27,21 @@ name: default
 k8s: true
 rules:
   - allow(rw, ${WORK_DIR})
-  - allow(rw, ${TMP_DIR})
   - allow(r, /)
 ```
 
+The system tmp paths (`/tmp` / `/private/tmp` and `$TMPDIR`) are always allowed read/write — you do not need to list them. A user `deny` rule on those paths still wins.
+
 ### Flags
 
-| Flag | Description |
-| --- | --- |
-| `-c, --config PATH` | Config file path |
-| `--profile NAME` | Profile name (default: `default`) |
+| Flag                 | Description                                      |
+| -------------------- | ------------------------------------------------ |
+| `-c, --config PATH`  | Config file path                                 |
+| `--profile NAME`     | Profile name (default: `default`)                |
 | `--k8s` / `--no-k8s` | Enable/disable the k8s proxy (overrides profile) |
-| `--k8s-config PATH` | Override kubeconfig path |
-| `--k8s-context CTX` | Override contexts (comma-separated, repeatable) |
-| `--k8s-mode rw\|ro` | `ro` rejects POST/PUT/PATCH/DELETE at the proxy |
+| `--k8s-config PATH`  | Override kubeconfig path                         |
+| `--k8s-context CTX`  | Override contexts (comma-separated, repeatable)  |
+| `--k8s-mode rw\|ro`  | `ro` rejects POST/PUT/PATCH/DELETE at the proxy  |
 
 ## Config
 
@@ -50,17 +51,28 @@ Multi-document YAML; each document is one profile.
 name: default
 rules:
   - allow(rw, ${WORK_DIR})
-  - allow(rw, ${TMP_DIR})
-  - deny(rw, ~/.*)
+  - allow(rw, ~/.claude)
+  - allow(rw, ~/.claude.json)
+  - allow(rw, ~/.codex)
   - allow(r, /)
 ---
 name: k8s
-k8s: true
+k8s: true # Enable k8s proxy
 rules:
   - allow(rw, ${WORK_DIR})
-  - allow(rw, ${TMP_DIR})
-  - allow(r, ~/.kube/kuberc)
-  - deny(rw, ~/.*)
+  - allow(rw, ~/.claude)
+  - allow(rw, ~/.claude.json)
+  - allow(rw, ~/.codex)
+  - deny(rw, ~/.kube/config) # Deny Kubernetes secrets
+  - allow(r, /)
+---
+name: hide-secret
+rules:
+  - allow(rw, ${WORK_DIR})
+  - allow(rw, ~/.claude)
+  - allow(rw, ~/.claude.json)
+  - allow(rw, ~/.codex)
+  - deby(rw, ~/.*) # Deny secret files
   - allow(r, /)
 ```
 
@@ -68,7 +80,7 @@ rules:
 
 `ACTION(MODE, PATH)` where `ACTION` is `allow` or `deny`, `MODE` is `r`, `w`, or `rw`.
 
-`PATH` supports `~`, `${VAR}`, and the built-ins `${WORK_DIR}` (cwd), `${TMP_DIR}`, `${HOME}`. Custom variables can be defined under `env:` and are also exported into the sandboxed command's environment.
+`PATH` supports `~`, `${VAR}`, and the built-ins `${WORK_DIR}` (cwd) and `${HOME}`. Custom variables can be defined under `env:` and are also exported into the sandboxed command's environment.
 
 ### k8s
 
@@ -78,5 +90,5 @@ When `k8s` is set on a profile (either `k8s: true` or a mapping), sbx starts a l
 k8s:
   config: ~/.kube/config       # source kubeconfig (default: $KUBECONFIG / ~/.kube/config)
   context: ["prod-*", "stg"]   # context names or globs; empty = all contexts
-  mode: ro                     # rw (default) or ro
+  mode: ro                     # If set to `ro`, it will be limited to read-only APIs such as `kubectl get`.
 ```

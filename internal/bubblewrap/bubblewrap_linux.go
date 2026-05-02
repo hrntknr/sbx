@@ -36,8 +36,45 @@ func Build(rules []config.Rule, expand func(string) string) ([]string, error) {
 		}
 		args = append(args, a...)
 	}
+	// Implicit tmp binds go AFTER user rules so broad mounts (e.g.
+	// `--ro-bind-try / /` from `allow(r, /)`) don't shadow tmp under
+	// last-mount-wins. User rules that touch tmp are then re-emitted so
+	// explicit allow/deny on tmp paths still beats the implicit allow,
+	// matching the seatbelt last-match-wins semantics.
+	tmpPaths := config.ImplicitTmpPaths()
+	for _, p := range tmpPaths {
+		args = append(args, "--bind-try", p, p)
+	}
+	for i := len(rules) - 1; i >= 0; i-- {
+		if !ruleTouchesTmp(rules[i], expand, tmpPaths) {
+			continue
+		}
+		a, err := emitRule(rules[i], expand)
+		if err != nil {
+			return nil, fmt.Errorf("rule %d: %w", i+1, err)
+		}
+		args = append(args, a...)
+	}
 	args = append(args, baseArgs()...)
 	return args, nil
+}
+
+// ruleTouchesTmp reports whether r's expanded path is exactly one of the
+// implicit tmp paths or a descendant of one.
+func ruleTouchesTmp(r config.Rule, expand func(string) string, tmpPaths []string) bool {
+	p := strings.TrimRight(expand(r.Path), "/")
+	if p == "" {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		p = resolved
+	}
+	for _, t := range tmpPaths {
+		if p == t || strings.HasPrefix(p, t+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func emitRule(r config.Rule, expand func(string) string) ([]string, error) {

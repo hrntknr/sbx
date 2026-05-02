@@ -105,7 +105,7 @@ func TestLoadProfileMultiDocument(t *testing.T) {
 name: default
 env:
   SBX_MODE: default
-  CACHE_DIR: ${TMP_DIR}/sbx
+  CACHE_DIR: ${WORK_DIR}/cache
 rules:
   - allow(rw, ${WORK_DIR})
 ---
@@ -264,7 +264,6 @@ func TestLoadSelectedProfileFallsBackToDefault(t *testing.T) {
 	}
 	want := []Rule{
 		{Action: "allow", Mode: "rw", Path: "${WORK_DIR}"},
-		{Action: "allow", Mode: "rw", Path: "${TMP_DIR}"},
 		{Action: "allow", Mode: "r", Path: "/"},
 	}
 	if len(p.Rules) != len(want) {
