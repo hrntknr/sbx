@@ -18,6 +18,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/transport"
+
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
 
 // Proxy is an in-process HTTP server that fronts one or more upstream
