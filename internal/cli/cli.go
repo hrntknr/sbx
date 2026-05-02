@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ import (
 	"github.com/hrntknr/sbx/internal/k8s"
 )
 
-type cli struct {
+type opts struct {
 	Config     string   `name:"config" short:"c" help:"config file path (default: ./sbx.yaml or ~/.sbx.yaml)" placeholder:"PATH"`
 	Profile    string   `name:"profile" help:"profile name (default: default)" placeholder:"NAME"`
 	Dump       bool     `name:"dump" hidden:"" help:"print the generated sandbox spec and exit"`
@@ -21,10 +21,8 @@ type cli struct {
 	Command    []string `arg:"" optional:"" passthrough:"" help:"command to run inside the sandbox"`
 }
 
-func main() { os.Exit(realMain(os.Args[1:])) }
-
-func realMain(rawArgs []string) int {
-	var c cli
+func Run(rawArgs []string) int {
+	var c opts
 	parser := kong.Must(&c,
 		kong.Name("sbx"),
 		kong.Description("Run a command inside a configurable sandbox."),
@@ -60,14 +58,16 @@ func realMain(rawArgs []string) int {
 		if err != nil {
 			return failCode(fmt.Errorf("k8s proxy: %w", err))
 		}
-		defer proxy.Stop()
-		if selected.Env == nil {
-			selected.Env = map[string]string{}
+		if proxy != nil {
+			defer proxy.Stop()
+			if selected.Env == nil {
+				selected.Env = map[string]string{}
+			}
+			selected.Env["KUBECONFIG"] = proxy.Path
+			selected.Rules = append([]config.Rule{
+				{Action: "allow", Mode: "r", Path: proxy.Dir},
+			}, selected.Rules...)
 		}
-		selected.Env["KUBECONFIG"] = proxy.Path
-		selected.Rules = append([]config.Rule{
-			{Action: "allow", Mode: "r", Path: proxy.Dir},
-		}, selected.Rules...)
 	}
 
 	env := config.EnvList(selected.Env, expand)
@@ -81,7 +81,7 @@ func realMain(rawArgs []string) int {
 // applyCLIOverrides patches the loaded profile in place with CLI flag values.
 // --no-k8s clears K8s entirely; any other --k8s-* flag (or --k8s) initializes
 // K8s when absent and overrides the corresponding field when explicitly set.
-func applyCLIOverrides(p *config.Profile, c *cli) {
+func applyCLIOverrides(p *config.Profile, c *opts) {
 	if c.K8s != nil && !*c.K8s {
 		p.K8s = nil
 		return

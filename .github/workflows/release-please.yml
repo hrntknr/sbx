@@ -62,7 +62,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w" -o "dist/sbx" ./cmd/sbx
+          go build -trimpath -ldflags="-s -w" -o "dist/sbx" .
 
       - name: Package assets
         env:

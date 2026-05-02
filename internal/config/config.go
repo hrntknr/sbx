@@ -111,21 +111,24 @@ func LoadProfile(path, profile string) ([]Rule, error) {
 
 // LoadSelectedProfile reads path, finds the profile by name (defaults to
 // "default" when profile is ""), and returns it with rules already parsed.
-// When path is "" and no default config file exists, an empty Profile is
-// returned without error.
+// When path is "" and no default config file exists, the built-in default
+// profile is returned (allow rw on cwd/tmp, allow r on /, k8s enabled).
 func LoadSelectedProfile(path, profile string) (Profile, error) {
+	if profile == "" {
+		profile = "default"
+	}
 	if path == "" {
 		path = defaultPath()
 	}
 	if path == "" {
-		return Profile{}, nil
+		if profile != "default" {
+			return Profile{}, fmt.Errorf("profile %q not found", profile)
+		}
+		return defaultProfile(), nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Profile{}, err
-	}
-	if profile == "" {
-		profile = "default"
 	}
 	raw, err := selectProfile(data, profile)
 	if err != nil {
@@ -140,6 +143,19 @@ func LoadSelectedProfile(path, profile string) (Profile, error) {
 		rules[i] = r
 	}
 	return Profile{Name: profile, Rules: rules, Env: raw.Env, K8s: raw.K8s}, nil
+}
+
+// defaultProfile is used when no config file is present.
+func defaultProfile() Profile {
+	return Profile{
+		Name: "default",
+		K8s:  &K8sProfile{},
+		Rules: []Rule{
+			{Action: "allow", Mode: "rw", Path: "${WORK_DIR}"},
+			{Action: "allow", Mode: "rw", Path: "${TMP_DIR}"},
+			{Action: "allow", Mode: "r", Path: "/"},
+		},
+	}
 }
 
 // selectProfile decodes data as a stream of YAML documents, returning the

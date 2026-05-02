@@ -3,6 +3,7 @@ package k8s
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -103,6 +104,36 @@ func TestRouterRoutesEscapedContextName(t *testing.T) {
 	if gotPath != "/api/v1/pods" {
 		t.Errorf("upstream path = %q, want /api/v1/pods", gotPath)
 	}
+}
+
+func TestStartEmptyKubeconfigSkips(t *testing.T) {
+	path := writeEmptyKubeconfig(t)
+
+	proxy, err := Start(path, nil, ModeReadWrite)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if proxy != nil {
+		proxy.Stop()
+		t.Fatal("expected nil proxy when kubeconfig has no contexts")
+	}
+}
+
+func TestStartEmptyKubeconfigButContextRequestedErrors(t *testing.T) {
+	path := writeEmptyKubeconfig(t)
+
+	if _, err := Start(path, []string{"missing"}, ModeReadWrite); err == nil {
+		t.Fatal("expected error when contexts are requested but kubeconfig is empty")
+	}
+}
+
+func writeEmptyKubeconfig(t *testing.T) string {
+	t.Helper()
+	path := t.TempDir() + "/config"
+	if err := os.WriteFile(path, []byte("apiVersion: v1\nkind: Config\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestParseMode(t *testing.T) {

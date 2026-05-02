@@ -9,7 +9,7 @@ Run a command inside a configurable sandbox.
 ## Install
 
 ```sh
-go install github.com/hrntknr/sbx/cmd/sbx@latest
+go install github.com/hrntknr/sbx@latest
 ```
 
 ## Usage
@@ -20,7 +20,16 @@ sbx --profile k8s -- kubectl get pods
 sbx --dump -- <command>          # print the generated sandbox spec and exit
 ```
 
-Config is loaded from `--config PATH`, `./sbx.yaml`, or `~/.sbx.yaml` (in that order). Profile defaults to `default`.
+Config is loaded from `--config PATH`, `./sbx.yaml`, or `~/.sbx.yaml` (in that order). Profile defaults to `default`. If no config file is found, a built-in default profile is used:
+
+```yaml
+name: default
+k8s: true
+rules:
+  - allow(rw, ${WORK_DIR})
+  - allow(rw, ${TMP_DIR})
+  - allow(r, /)
+```
 
 ### Flags
 

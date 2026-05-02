@@ -247,6 +247,40 @@ rules:
 	}
 }
 
+func TestLoadSelectedProfileFallsBackToDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("HOME", dir)
+
+	p, err := LoadSelectedProfile("", "")
+	if err != nil {
+		t.Fatalf("LoadSelectedProfile: %v", err)
+	}
+	if p.Name != "default" {
+		t.Fatalf("Name = %q, want default", p.Name)
+	}
+	if p.K8s == nil {
+		t.Fatal("K8s should be enabled")
+	}
+	want := []Rule{
+		{Action: "allow", Mode: "rw", Path: "${WORK_DIR}"},
+		{Action: "allow", Mode: "rw", Path: "${TMP_DIR}"},
+		{Action: "allow", Mode: "r", Path: "/"},
+	}
+	if len(p.Rules) != len(want) {
+		t.Fatalf("Rules = %+v, want %+v", p.Rules, want)
+	}
+	for i := range want {
+		if p.Rules[i] != want[i] {
+			t.Fatalf("Rules[%d] = %+v, want %+v", i, p.Rules[i], want[i])
+		}
+	}
+
+	if _, err := LoadSelectedProfile("", "missing"); err == nil {
+		t.Fatal("expected error for non-default profile when no config file exists")
+	}
+}
+
 func TestExpanderUsesProfileEnv(t *testing.T) {
 	dir := t.TempDir()
 	env := map[string]string{"CACHE_DIR": dir, "NESTED": "${CACHE_DIR}/nested"}

@@ -57,7 +57,8 @@ func ParseMode(s string) (Mode, error) {
 // for the requested contexts. Each entry may be a literal context name or a
 // glob (path.Match syntax: `*`, `?`, `[...]`). An empty contexts list expands
 // to every context in the source kubeconfig, with kubectl's current-context
-// first.
+// first. If no kubeconfig is found and no contexts were explicitly requested,
+// Start returns (nil, nil) so callers can skip the proxy entirely.
 func Start(kubeconfig string, contexts []string, mode Mode) (*Proxy, error) {
 	rules := loadingRules(kubeconfig)
 	raw, err := rules.Load()
@@ -65,6 +66,9 @@ func Start(kubeconfig string, contexts []string, mode Mode) (*Proxy, error) {
 		return nil, fmt.Errorf("load kubeconfig: %w", err)
 	}
 	if len(raw.Contexts) == 0 {
+		if len(contexts) == 0 {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("no contexts found in kubeconfig")
 	}
 

@@ -1,23 +1,22 @@
-//go:build linux
+//go:build darwin
 
-package main
+package cli
 
 import (
 	"fmt"
-	"strings"
 
-	"github.com/hrntknr/sbx/internal/bubblewrap"
 	"github.com/hrntknr/sbx/internal/config"
+	"github.com/hrntknr/sbx/internal/seatbelt"
 )
 
 func run(rules []config.Rule, expand func(string) string, env []string, dump bool, args []string) (int, error) {
-	bargs, err := bubblewrap.Build(rules, expand)
+	profile, err := seatbelt.Build(rules, expand)
 	if err != nil {
 		return 0, err
 	}
 	if dump {
-		fmt.Println(strings.Join(append([]string{"bwrap"}, bargs...), " "))
+		fmt.Print(profile)
 		return 0, nil
 	}
-	return bubblewrap.Run(bargs, args, env)
+	return seatbelt.Run(profile, args, env)
 }

@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"slices"
@@ -9,7 +9,7 @@ import (
 
 func TestApplyCLIOverridesNoChange(t *testing.T) {
 	prof := config.Profile{K8s: &config.K8sProfile{Mode: "rw"}}
-	applyCLIOverrides(&prof, &cli{})
+	applyCLIOverrides(&prof, &opts{})
 	if prof.K8s == nil || prof.K8s.Mode != "rw" {
 		t.Fatalf("profile mutated: %+v", prof)
 	}
@@ -18,7 +18,7 @@ func TestApplyCLIOverridesNoChange(t *testing.T) {
 func TestApplyCLIOverridesNoK8sDisables(t *testing.T) {
 	f := false
 	prof := config.Profile{K8s: &config.K8sProfile{Mode: "rw"}}
-	applyCLIOverrides(&prof, &cli{K8s: &f})
+	applyCLIOverrides(&prof, &opts{K8s: &f})
 	if prof.K8s != nil {
 		t.Fatalf("--no-k8s should clear K8s, got %+v", prof.K8s)
 	}
@@ -27,7 +27,7 @@ func TestApplyCLIOverridesNoK8sDisables(t *testing.T) {
 func TestApplyCLIOverridesK8sEnables(t *testing.T) {
 	tr := true
 	prof := config.Profile{}
-	applyCLIOverrides(&prof, &cli{K8s: &tr})
+	applyCLIOverrides(&prof, &opts{K8s: &tr})
 	if prof.K8s == nil {
 		t.Fatal("--k8s should enable K8s on profile without it")
 	}
@@ -36,7 +36,7 @@ func TestApplyCLIOverridesK8sEnables(t *testing.T) {
 func TestApplyCLIOverridesOverrideImpliesEnable(t *testing.T) {
 	mode := "ro"
 	prof := config.Profile{}
-	applyCLIOverrides(&prof, &cli{K8sMode: &mode})
+	applyCLIOverrides(&prof, &opts{K8sMode: &mode})
 	if prof.K8s == nil || prof.K8s.Mode != "ro" {
 		t.Fatalf("--k8s-mode should enable and set mode, got %+v", prof.K8s)
 	}
@@ -50,7 +50,7 @@ func TestApplyCLIOverridesFieldsWin(t *testing.T) {
 	}}
 	cfg := "/cli.yaml"
 	mode := "ro"
-	applyCLIOverrides(&prof, &cli{
+	applyCLIOverrides(&prof, &opts{
 		K8sConfig:  &cfg,
 		K8sContext: []string{"cli"},
 		K8sMode:    &mode,
@@ -69,7 +69,7 @@ func TestApplyCLIOverridesUnsetKeepsProfile(t *testing.T) {
 		Contexts: []string{"prof"},
 		Mode:     "rw",
 	}}
-	applyCLIOverrides(&prof, &cli{})
+	applyCLIOverrides(&prof, &opts{})
 	if prof.K8s.Config != "/profile.yaml" || prof.K8s.Mode != "rw" {
 		t.Errorf("unset CLI fields shouldn't change profile: %+v", prof.K8s)
 	}
