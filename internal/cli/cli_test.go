@@ -4,8 +4,91 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/alecthomas/kong"
+
 	"github.com/hrntknr/sbx/internal/config"
 )
+
+func newParser(t *testing.T) *kong.Kong {
+	t.Helper()
+	return kong.Must(&opts{}, kong.Name("sbx"))
+}
+
+func TestNormalizeArgsNoMatches(t *testing.T) {
+	in := []string{"--profile", "foo", "mycmd", "--bar", "baz"}
+	got := normalizeArgs(in, newParser(t))
+	if !slices.Equal(got, in) {
+		t.Errorf("got %v, want %v", got, in)
+	}
+}
+
+func TestSplitSbxPrefixedAfterCommand(t *testing.T) {
+	in := []string{"mycmd", "--bar", "--sbx-k8s", "--baz"}
+	got := splitSbxPrefixed(in, newParser(t))
+	if !slices.Equal(got.sbx, []string{"--k8s"}) {
+		t.Errorf("sbx = %v, want [--k8s]", got.sbx)
+	}
+	if !slices.Equal(got.rest, []string{"mycmd", "--bar", "--baz"}) {
+		t.Errorf("rest = %v, want [mycmd --bar --baz]", got.rest)
+	}
+	wantNormalized := []string{"--k8s", "mycmd", "--bar", "--baz"}
+	if got := got.normalized(); !slices.Equal(got, wantNormalized) {
+		t.Errorf("normalized = %v, want %v", got, wantNormalized)
+	}
+}
+
+func TestNormalizeArgsSpaceValue(t *testing.T) {
+	in := []string{"mycmd", "--sbx-k8s-config", "/tmp/kc", "--bar"}
+	want := []string{"--k8s-config", "/tmp/kc", "mycmd", "--bar"}
+	got := normalizeArgs(in, newParser(t))
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestNormalizeArgsEqualsValue(t *testing.T) {
+	in := []string{"mycmd", "--sbx-k8s-config=/tmp/kc", "--bar"}
+	want := []string{"--k8s-config=/tmp/kc", "mycmd", "--bar"}
+	got := normalizeArgs(in, newParser(t))
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestNormalizeArgsNegated(t *testing.T) {
+	in := []string{"mycmd", "--sbx-no-k8s", "--bar"}
+	want := []string{"--no-k8s", "mycmd", "--bar"}
+	got := normalizeArgs(in, newParser(t))
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestNormalizeArgsSliceRepeated(t *testing.T) {
+	in := []string{"mycmd", "--sbx-k8s-context", "a,b", "--sbx-k8s-context=c"}
+	want := []string{"--k8s-context", "a,b", "--k8s-context=c", "mycmd"}
+	got := normalizeArgs(in, newParser(t))
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestNormalizeArgsBoolDoesNotConsumeNext(t *testing.T) {
+	in := []string{"--sbx-dump", "mycmd", "arg"}
+	want := []string{"--dump", "mycmd", "arg"}
+	got := normalizeArgs(in, newParser(t))
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestNormalizeArgsBareDashSbxIgnored(t *testing.T) {
+	in := []string{"mycmd", "--sbx-", "arg"}
+	got := normalizeArgs(in, newParser(t))
+	if !slices.Equal(got, in) {
+		t.Errorf("got %v, want %v", got, in)
+	}
+}
 
 func TestApplyCLIOverridesNoChange(t *testing.T) {
 	prof := config.Profile{K8s: &config.K8sProfile{Mode: "rw"}}

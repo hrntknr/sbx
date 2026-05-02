@@ -28,7 +28,7 @@ func Run(rawArgs []string) int {
 		kong.Description("Run a command inside a configurable sandbox."),
 		kong.UsageOnError(),
 	)
-	if _, err := parser.Parse(rawArgs); err != nil {
+	if _, err := parser.Parse(normalizeArgs(rawArgs, parser)); err != nil {
 		return failCode(err)
 	}
 
