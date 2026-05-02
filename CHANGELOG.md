@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/hrntknr/sbx/compare/sbx-v1.1.0...sbx-v1.2.0) (2026-05-02)
+
+
+### Features
+
+* add in-process k8s proxy and refactor CLI/config ([#3](https://github.com/hrntknr/sbx/issues/3)) ([c8e5db3](https://github.com/hrntknr/sbx/commit/c8e5db3f3ded699a0bf2a471d927c748988c3216))
+
 ## [1.1.0](https://github.com/hrntknr/sbx/compare/sbx-v1.0.0...sbx-v1.1.0) (2026-05-01)
 
 
