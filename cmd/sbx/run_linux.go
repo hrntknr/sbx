@@ -4,25 +4,20 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/hrntknr/sbx/internal/bubblewrap"
 	"github.com/hrntknr/sbx/internal/config"
 )
 
-func run(rules []config.Rule, expand func(string) string, env []string, dump bool, args []string) {
+func run(rules []config.Rule, expand func(string) string, env []string, dump bool, args []string) (int, error) {
 	bargs, err := bubblewrap.Build(rules, expand)
 	if err != nil {
-		fail(err)
+		return 0, err
 	}
 	if dump {
 		fmt.Println(strings.Join(append([]string{"bwrap"}, bargs...), " "))
-		return
+		return 0, nil
 	}
-	code, err := bubblewrap.Run(bargs, args, env)
-	if err != nil {
-		fail(err)
-	}
-	os.Exit(code)
+	return bubblewrap.Run(bargs, args, env)
 }

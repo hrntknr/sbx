@@ -4,12 +4,10 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/hrntknr/sbx/internal/config"
 )
 
-func run(_ []config.Rule, _ func(string) string, _ []string, _ bool, _ []string) {
-	fmt.Fprintln(os.Stderr, "sbx: only darwin and linux are supported")
-	os.Exit(1)
+func run(_ []config.Rule, _ func(string) string, _ []string, _ bool, _ []string) (int, error) {
+	return 0, fmt.Errorf("only darwin and linux are supported")
 }
