@@ -3,7 +3,6 @@
 package seatbelt
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/hrntknr/sbx/internal/config"
+	"github.com/hrntknr/sbx/internal/runner"
 )
 
 // non-file ops + file metadata/xattr are always permitted so stat-heavy tools
@@ -25,6 +25,8 @@ const baseProfile = `(version 1)
 (allow sysctl-read)
 (allow iokit-open)
 (allow ipc-posix*)
+(allow file-ioctl)
+(allow system-fsctl)
 (allow file-read-metadata)
 (allow file-read-xattr)
 (allow file-write-data
@@ -33,6 +35,8 @@ const baseProfile = `(version 1)
     (literal "/dev/random")
     (literal "/dev/urandom")
     (literal "/dev/tty")
+    (literal "/dev/stdout")
+    (literal "/dev/stderr")
     (literal "/dev/dtracehelper"))
 `
 
@@ -153,12 +157,5 @@ func Run(profile string, args, env []string) (int, error) {
 	cmd := exec.Command("sandbox-exec", append([]string{"-p", profile}, args...)...)
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return ee.ExitCode(), nil
-		}
-		return 0, err
-	}
-	return 0, nil
+	return runner.Run(cmd)
 }

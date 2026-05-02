@@ -58,50 +58,22 @@ func TestParseMode(t *testing.T) {
 	}
 }
 
-func TestLoadProfileList(t *testing.T) {
+func writeConfig(t *testing.T, contents string) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "sbx.yaml")
-	data := []byte(`
-- name: default
-  rules:
-    - allow(rw, ${WORK_DIR})
-    - allow(r, /)
-- name: locked
-  rules:
-    - deny(rw, ~/.*)
-`)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-
-	got, err := LoadProfile(path, "")
-	if err != nil {
-		t.Fatalf("LoadProfile default: %v", err)
-	}
-	if len(got) != 2 || got[0] != (Rule{"allow", "rw", "${WORK_DIR}"}) || got[1] != (Rule{"allow", "r", "/"}) {
-		t.Fatalf("LoadProfile default = %+v", got)
-	}
-
-	got, err = LoadProfile(path, "locked")
-	if err != nil {
-		t.Fatalf("LoadProfile locked: %v", err)
-	}
-	if len(got) != 1 || got[0] != (Rule{"deny", "rw", "~/.*"}) {
-		t.Fatalf("LoadProfile locked = %+v", got)
-	}
+	return path
 }
 
 func TestLoadSingleProfile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sbx.yaml")
-	data := []byte(`
+	path := writeConfig(t, `
 name: default
 rules:
   - allow(rw, ${WORK_DIR})
   - allow(r, /)
 `)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	got, err := LoadProfile(path, "")
 	if err != nil {
 		t.Fatalf("LoadProfile default: %v", err)
@@ -114,9 +86,22 @@ rules:
 	}
 }
 
-func TestLoadProfileDocuments(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sbx.yaml")
-	data := []byte(`
+func TestLoadProfileWithoutName(t *testing.T) {
+	path := writeConfig(t, `
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	got, err := LoadProfile(path, "")
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	if len(got) != 1 || got[0] != (Rule{"allow", "rw", "${WORK_DIR}"}) {
+		t.Fatalf("LoadProfile = %+v", got)
+	}
+}
+
+func TestLoadProfileMultiDocument(t *testing.T) {
+	path := writeConfig(t, `
 name: default
 env:
   SBX_MODE: default
@@ -130,10 +115,6 @@ env:
 rules:
   - deny(rw, ~/.*)
 `)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	got, err := LoadProfile(path, "")
 	if err != nil {
 		t.Fatalf("LoadProfile default: %v", err)
@@ -159,25 +140,110 @@ rules:
 	}
 }
 
-func TestLoadProfileLegacyList(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sbx.yaml")
-	data := []byte(`
-- allow(rw, ${WORK_DIR})
-- allow(r, /)
+func TestLoadProfileK8sBool(t *testing.T) {
+	path := writeConfig(t, `
+name: k8s
+k8s: true
+rules:
+  - allow(rw, ${WORK_DIR})
 `)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := LoadProfile(path, "")
+	p, err := LoadSelectedProfile(path, "k8s")
 	if err != nil {
-		t.Fatalf("LoadProfile legacy default: %v", err)
+		t.Fatalf("LoadSelectedProfile: %v", err)
 	}
-	if len(got) != 2 || got[0] != (Rule{"allow", "rw", "${WORK_DIR}"}) || got[1] != (Rule{"allow", "r", "/"}) {
-		t.Fatalf("LoadProfile legacy default = %+v", got)
+	if p.K8s == nil {
+		t.Fatalf("K8s should be enabled")
 	}
-	if _, err := LoadProfile(path, "locked"); err == nil {
-		t.Fatal("LoadProfile legacy locked: expected error")
+	if len(p.K8s.Contexts) != 0 || p.K8s.Config != "" || p.K8s.Mode != "" {
+		t.Fatalf("K8s defaults wrong: %+v", p.K8s)
+	}
+}
+
+func TestLoadProfileK8sFalseRejected(t *testing.T) {
+	path := writeConfig(t, `
+name: k8s
+k8s: false
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	if _, err := LoadSelectedProfile(path, "k8s"); err == nil {
+		t.Fatal("expected error for k8s: false")
+	}
+}
+
+func TestLoadProfileK8sMapping(t *testing.T) {
+	path := writeConfig(t, `
+name: k8s
+k8s:
+  config: ~/.kube/alt
+  context: my-ctx
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	p, err := LoadSelectedProfile(path, "k8s")
+	if err != nil {
+		t.Fatalf("LoadSelectedProfile: %v", err)
+	}
+	if p.K8s == nil {
+		t.Fatalf("K8s should be enabled")
+	}
+	if p.K8s.Config != "~/.kube/alt" {
+		t.Fatalf("K8s.Config = %q", p.K8s.Config)
+	}
+	if len(p.K8s.Contexts) != 1 || p.K8s.Contexts[0] != "my-ctx" {
+		t.Fatalf("K8s.Contexts = %v", p.K8s.Contexts)
+	}
+}
+
+func TestLoadProfileK8sMultipleContexts(t *testing.T) {
+	path := writeConfig(t, `
+name: k8s
+k8s:
+  context: [dev, prod]
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	p, err := LoadSelectedProfile(path, "k8s")
+	if err != nil {
+		t.Fatalf("LoadSelectedProfile: %v", err)
+	}
+	if p.K8s == nil {
+		t.Fatalf("K8s should be enabled")
+	}
+	if len(p.K8s.Contexts) != 2 || p.K8s.Contexts[0] != "dev" || p.K8s.Contexts[1] != "prod" {
+		t.Fatalf("K8s.Contexts = %v", p.K8s.Contexts)
+	}
+}
+
+func TestLoadProfileK8sMode(t *testing.T) {
+	path := writeConfig(t, `
+name: k8s
+k8s:
+  mode: ro
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	p, err := LoadSelectedProfile(path, "k8s")
+	if err != nil {
+		t.Fatalf("LoadSelectedProfile: %v", err)
+	}
+	if p.K8s == nil || p.K8s.Mode != "ro" {
+		t.Fatalf("K8s.Mode = %q, want ro", p.K8s.Mode)
+	}
+}
+
+func TestLoadProfileK8sAbsent(t *testing.T) {
+	path := writeConfig(t, `
+name: default
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	p, err := LoadSelectedProfile(path, "default")
+	if err != nil {
+		t.Fatalf("LoadSelectedProfile: %v", err)
+	}
+	if p.K8s != nil {
+		t.Fatalf("K8s should be nil: %+v", p.K8s)
 	}
 }
 

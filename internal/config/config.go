@@ -12,28 +12,95 @@ import (
 	yaml "gopkg.in/yaml.v3"
 )
 
+// Rule is a parsed sandbox access rule.
 type Rule struct {
 	Action string
 	Mode   string
 	Path   string
 }
 
+// Profile is a single resolved profile with parsed rules.
 type Profile struct {
 	Name  string
 	Rules []Rule
 	Env   map[string]string
+	K8s   *K8sProfile
 }
 
-type profileConfig struct {
+// K8sProfile enables a kubectl proxy alongside the sandbox. Presence of the
+// profile means enabled; nil means disabled. Namespace is inherited from
+// each source context and is not configurable.
+//
+// Contexts may be literal context names or globs (path.Match syntax: `*`,
+// `?`, `[...]`). Each resolved context gets its own entry in the generated
+// kubeconfig, served through a single localhost proxy. Empty list means
+// "expose every context in the source kubeconfig", current-context first.
+//
+// Mode controls request filtering at the proxy:
+//   - "rw" (default): no filtering, the sandbox can mutate cluster state.
+//   - "ro":           POST/PUT/PATCH/DELETE are rejected at the proxy.
+type K8sProfile struct {
+	Config   string
+	Contexts []string
+	Mode     string
+}
+
+// UnmarshalYAML accepts:
+//
+//	k8s: true              -> empty profile (defaults)
+//	k8s: { ... }           -> mapping with config/context/mode
+//
+// `k8s: false` is rejected; omit the field to disable.
+func (k *K8sProfile) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var v bool
+		if err := node.Decode(&v); err != nil {
+			return fmt.Errorf("k8s: must be `true` or a mapping (got %q)", node.Value)
+		}
+		if !v {
+			return fmt.Errorf("k8s: false is not supported; omit the field to disable")
+		}
+		return nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("k8s: must be `true` or a mapping")
+	}
+	var raw struct {
+		Config  string        `yaml:"config"`
+		Context scalarOrSlice `yaml:"context"`
+		Mode    string        `yaml:"mode"`
+	}
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	k.Config, k.Contexts, k.Mode = raw.Config, raw.Context, raw.Mode
+	return nil
+}
+
+// scalarOrSlice decodes a YAML scalar or sequence into []string.
+type scalarOrSlice []string
+
+func (s *scalarOrSlice) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var v string
+		if err := node.Decode(&v); err != nil {
+			return err
+		}
+		*s = []string{v}
+		return nil
+	}
+	return node.Decode((*[]string)(s))
+}
+
+type rawProfile struct {
 	Name  string            `yaml:"name"`
 	Rules []string          `yaml:"rules"`
 	Env   map[string]string `yaml:"env"`
+	K8s   *K8sProfile       `yaml:"k8s"`
 }
 
-func Load(path string) ([]Rule, error) {
-	return LoadProfile(path, "")
-}
-
+// LoadProfile is a convenience wrapper that returns only the parsed rules of
+// the selected profile.
 func LoadProfile(path, profile string) ([]Rule, error) {
 	p, err := LoadSelectedProfile(path, profile)
 	if err != nil {
@@ -42,6 +109,10 @@ func LoadProfile(path, profile string) ([]Rule, error) {
 	return p.Rules, nil
 }
 
+// LoadSelectedProfile reads path, finds the profile by name (defaults to
+// "default" when profile is ""), and returns it with rules already parsed.
+// When path is "" and no default config file exists, an empty Profile is
+// returned without error.
 func LoadSelectedProfile(path, profile string) (Profile, error) {
 	if path == "" {
 		path = defaultPath()
@@ -53,173 +124,50 @@ func LoadSelectedProfile(path, profile string) (Profile, error) {
 	if err != nil {
 		return Profile{}, err
 	}
-	p, err := loadProfile(data, profile)
+	if profile == "" {
+		profile = "default"
+	}
+	raw, err := selectProfile(data, profile)
 	if err != nil {
 		return Profile{}, err
 	}
-	rules := make([]Rule, len(p.Rules))
-	for i, l := range p.Rules {
+	rules := make([]Rule, len(raw.Rules))
+	for i, l := range raw.Rules {
 		r, err := Parse(l)
 		if err != nil {
 			return Profile{}, fmt.Errorf("%s line %d: %w", path, i+1, err)
 		}
 		rules[i] = r
 	}
-	return Profile{Name: p.Name, Rules: rules, Env: p.Env}, nil
+	return Profile{Name: profile, Rules: rules, Env: raw.Env, K8s: raw.K8s}, nil
 }
 
-func loadProfile(data []byte, profile string) (profileConfig, error) {
-	if profile == "" {
-		profile = "default"
-	}
-	docs, err := documentNodes(data)
-	if err != nil {
-		return profileConfig{}, err
-	}
-	if len(docs) > 1 {
-		return documentProfileLines(docs, profile)
-	}
-	if len(docs) == 0 {
-		return profileConfig{Name: profile}, nil
-	}
-	return nodeLines(docs[0], profile)
-}
-
-func documentNodes(data []byte) ([]*yaml.Node, error) {
+// selectProfile decodes data as a stream of YAML documents, returning the
+// first one whose `name` matches profile (or "default" if `name` is
+// omitted). Documents that are entirely empty are skipped.
+func selectProfile(data []byte, profile string) (rawProfile, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
-	var docs []*yaml.Node
 	for {
-		var doc yaml.Node
-		if err := dec.Decode(&doc); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-		if len(doc.Content) == 0 {
-			continue
-		}
-		docs = append(docs, doc.Content[0])
-	}
-	return docs, nil
-}
-
-func documentProfileLines(docs []*yaml.Node, profile string) (profileConfig, error) {
-	for _, doc := range docs {
-		if !isProfileNode(doc) {
-			return profileConfig{}, fmt.Errorf("invalid multi-document config (expected profile documents)")
-		}
-		p, err := singleProfile(doc, profile)
-		if err == nil {
-			return p, nil
-		}
-	}
-	return profileConfig{}, fmt.Errorf("profile %q not found", profile)
-}
-
-func nodeLines(node *yaml.Node, profile string) (profileConfig, error) {
-	switch node.Kind {
-	case yaml.SequenceNode:
-		if isProfileList(node) {
-			return listProfile(node, profile)
-		}
-		if profile != "default" {
-			return profileConfig{}, fmt.Errorf("profile %q not found", profile)
-		}
-		lines, err := decodeLines(node)
-		return profileConfig{Name: profile, Rules: lines}, err
-	case yaml.MappingNode:
-		if isProfileNode(node) {
-			return singleProfile(node, profile)
-		}
-		profiles, err := profilesNode(node)
-		if err != nil {
-			return profileConfig{}, err
-		}
-		lines, ok := profiles[profile]
-		if !ok {
-			return profileConfig{}, fmt.Errorf("profile %q not found", profile)
-		}
-		return profileConfig{Name: profile, Rules: lines}, nil
-	default:
-		return profileConfig{}, fmt.Errorf("invalid config format (expected rule list or profiles map)")
-	}
-}
-
-func isProfileList(node *yaml.Node) bool {
-	return len(node.Content) > 0 && node.Content[0].Kind == yaml.MappingNode
-}
-
-func isProfileNode(node *yaml.Node) bool {
-	hasName := false
-	hasRules := false
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		switch node.Content[i].Value {
-		case "name":
-			hasName = true
-		case "rules":
-			hasRules = true
-		}
-	}
-	return hasName && hasRules
-}
-
-func singleProfile(node *yaml.Node, profile string) (profileConfig, error) {
-	var p profileConfig
-	if err := node.Decode(&p); err != nil {
-		return profileConfig{}, err
-	}
-	if p.Name != profile {
-		return profileConfig{}, fmt.Errorf("profile %q not found", profile)
-	}
-	return p, nil
-}
-
-func listProfile(node *yaml.Node, profile string) (profileConfig, error) {
-	var profiles []profileConfig
-	if err := node.Decode(&profiles); err != nil {
-		return profileConfig{}, err
-	}
-	for _, p := range profiles {
-		if p.Name == profile {
-			return p, nil
-		}
-	}
-	return profileConfig{}, fmt.Errorf("profile %q not found", profile)
-}
-
-func profilesNode(node *yaml.Node) (map[string][]string, error) {
-	var profilesNode *yaml.Node
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == "profiles" {
-			profilesNode = node.Content[i+1]
+		var p rawProfile
+		err := dec.Decode(&p)
+		if err == io.EOF {
 			break
 		}
-	}
-	if profilesNode == nil {
-		profilesNode = node
-	}
-	if profilesNode.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("invalid profiles config (expected map)")
-	}
-	profiles := make(map[string][]string)
-	for i := 0; i+1 < len(profilesNode.Content); i += 2 {
-		name := profilesNode.Content[i].Value
-		lines, err := decodeLines(profilesNode.Content[i+1])
 		if err != nil {
-			return nil, fmt.Errorf("profile %q: %w", name, err)
+			return rawProfile{}, err
 		}
-		profiles[name] = lines
+		if p.Name == "" && len(p.Rules) == 0 && len(p.Env) == 0 && p.K8s == nil {
+			continue
+		}
+		name := p.Name
+		if name == "" {
+			name = "default"
+		}
+		if name == profile {
+			return p, nil
+		}
 	}
-	return profiles, nil
-}
-
-func decodeLines(node *yaml.Node) ([]string, error) {
-	var lines []string
-	if err := node.Decode(&lines); err != nil {
-		return nil, err
-	}
-	return lines, nil
+	return rawProfile{}, fmt.Errorf("profile %q not found", profile)
 }
 
 func defaultPath() string {
@@ -250,6 +198,7 @@ func Parse(s string) (Rule, error) {
 	}, nil
 }
 
+// ParseMode parses "r" / "w" / "rw" into read/write bools.
 func ParseMode(s string) (read, write bool, err error) {
 	switch s {
 	case "rw":
@@ -262,6 +211,8 @@ func ParseMode(s string) (read, write bool, err error) {
 	return false, false, fmt.Errorf("invalid mode %q (must be r, w, or rw)", s)
 }
 
+// EnvList overlays env (with values expanded) onto os.Environ() and returns
+// it as a "KEY=VALUE" slice.
 func EnvList(env map[string]string, expand func(string) string) []string {
 	overrides := make(map[string]string, len(env))
 	for k, v := range env {
@@ -290,6 +241,9 @@ func EnvList(env map[string]string, expand func(string) string) []string {
 	return out
 }
 
+// Expander returns a function that expands ${VAR} and ~ in a string. VARs
+// are looked up in the supplied env maps (later maps override earlier),
+// then in built-ins WORK_DIR/TMP_DIR/HOME, then in os.Environ.
 func Expander(env ...map[string]string) func(string) string {
 	cwd, _ := os.Getwd()
 	tmp := os.TempDir()

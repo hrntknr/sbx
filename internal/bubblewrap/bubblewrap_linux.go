@@ -3,7 +3,6 @@
 package bubblewrap
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/hrntknr/sbx/internal/config"
+	"github.com/hrntknr/sbx/internal/runner"
 )
 
 // baseArgs is appended AFTER user rules so the fresh procfs/devfs override
@@ -103,12 +103,5 @@ func Run(bwrapArgs, cmd, env []string) (int, error) {
 	c := exec.Command("bwrap", full...)
 	c.Env = env
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := c.Run(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return ee.ExitCode(), nil
-		}
-		return 0, err
-	}
-	return 0, nil
+	return runner.Run(c)
 }

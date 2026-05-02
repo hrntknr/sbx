@@ -1,74 +1,79 @@
 package main
 
 import (
-	"flag"
+	"slices"
 	"testing"
+
+	"github.com/hrntknr/sbx/internal/config"
 )
 
-func TestCommandOptionsString(t *testing.T) {
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	var profile string
-	flags.StringVar(&profile, "profile", "", "")
-
-	args, err := commandOptions([]string{"echo", "--sbx-profile", "locked", "ok"}, flags)
-	if err != nil {
-		t.Fatalf("commandOptions: %v", err)
-	}
-	if profile != "locked" {
-		t.Fatalf("profile = %q, want locked", profile)
-	}
-	if len(args) != 2 || args[0] != "echo" || args[1] != "ok" {
-		t.Fatalf("args = %#v, want echo ok", args)
+func TestApplyCLIOverridesNoChange(t *testing.T) {
+	prof := config.Profile{K8s: &config.K8sProfile{Mode: "rw"}}
+	applyCLIOverrides(&prof, &cli{})
+	if prof.K8s == nil || prof.K8s.Mode != "rw" {
+		t.Fatalf("profile mutated: %+v", prof)
 	}
 }
 
-func TestCommandOptionsEquals(t *testing.T) {
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	var profile string
-	flags.StringVar(&profile, "profile", "default", "")
-
-	args, err := commandOptions([]string{"echo", "--sbx-profile=locked", "ok"}, flags)
-	if err != nil {
-		t.Fatalf("commandOptions: %v", err)
-	}
-	if profile != "locked" {
-		t.Fatalf("profile = %q, want locked", profile)
-	}
-	if len(args) != 2 || args[0] != "echo" || args[1] != "ok" {
-		t.Fatalf("args = %#v, want echo ok", args)
+func TestApplyCLIOverridesNoK8sDisables(t *testing.T) {
+	f := false
+	prof := config.Profile{K8s: &config.K8sProfile{Mode: "rw"}}
+	applyCLIOverrides(&prof, &cli{K8s: &f})
+	if prof.K8s != nil {
+		t.Fatalf("--no-k8s should clear K8s, got %+v", prof.K8s)
 	}
 }
 
-func TestCommandOptionsBool(t *testing.T) {
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	var dump bool
-	flags.BoolVar(&dump, "dump", false, "")
-
-	args, err := commandOptions([]string{"echo", "--sbx-dump", "ok"}, flags)
-	if err != nil {
-		t.Fatalf("commandOptions: %v", err)
-	}
-	if !dump {
-		t.Fatal("dump = false, want true")
-	}
-	if len(args) != 2 || args[0] != "echo" || args[1] != "ok" {
-		t.Fatalf("args = %#v, want echo ok", args)
+func TestApplyCLIOverridesK8sEnables(t *testing.T) {
+	tr := true
+	prof := config.Profile{}
+	applyCLIOverrides(&prof, &cli{K8s: &tr})
+	if prof.K8s == nil {
+		t.Fatal("--k8s should enable K8s on profile without it")
 	}
 }
 
-func TestCommandOptionsUnknown(t *testing.T) {
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	if _, err := commandOptions([]string{"echo", "--sbx-missing"}, flags); err == nil {
-		t.Fatal("commandOptions: expected unknown option error")
+func TestApplyCLIOverridesOverrideImpliesEnable(t *testing.T) {
+	mode := "ro"
+	prof := config.Profile{}
+	applyCLIOverrides(&prof, &cli{K8sMode: &mode})
+	if prof.K8s == nil || prof.K8s.Mode != "ro" {
+		t.Fatalf("--k8s-mode should enable and set mode, got %+v", prof.K8s)
 	}
 }
 
-func TestCommandOptionsMissingValue(t *testing.T) {
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	var profile string
-	flags.StringVar(&profile, "profile", "", "")
+func TestApplyCLIOverridesFieldsWin(t *testing.T) {
+	prof := config.Profile{K8s: &config.K8sProfile{
+		Config:   "/profile.yaml",
+		Contexts: []string{"prof"},
+		Mode:     "rw",
+	}}
+	cfg := "/cli.yaml"
+	mode := "ro"
+	applyCLIOverrides(&prof, &cli{
+		K8sConfig:  &cfg,
+		K8sContext: []string{"cli"},
+		K8sMode:    &mode,
+	})
+	if prof.K8s.Config != cfg || prof.K8s.Mode != mode {
+		t.Errorf("CLI fields didn't win: %+v", prof.K8s)
+	}
+	if !slices.Equal(prof.K8s.Contexts, []string{"cli"}) {
+		t.Errorf("contexts = %v, want [cli]", prof.K8s.Contexts)
+	}
+}
 
-	if _, err := commandOptions([]string{"echo", "--sbx-profile"}, flags); err == nil {
-		t.Fatal("commandOptions: expected missing value error")
+func TestApplyCLIOverridesUnsetKeepsProfile(t *testing.T) {
+	prof := config.Profile{K8s: &config.K8sProfile{
+		Config:   "/profile.yaml",
+		Contexts: []string{"prof"},
+		Mode:     "rw",
+	}}
+	applyCLIOverrides(&prof, &cli{})
+	if prof.K8s.Config != "/profile.yaml" || prof.K8s.Mode != "rw" {
+		t.Errorf("unset CLI fields shouldn't change profile: %+v", prof.K8s)
+	}
+	if !slices.Equal(prof.K8s.Contexts, []string{"prof"}) {
+		t.Errorf("contexts = %v, want [prof]", prof.K8s.Contexts)
 	}
 }
