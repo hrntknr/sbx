@@ -11,8 +11,9 @@ import (
 )
 
 type opts struct {
-	Config     string   `name:"config" short:"c" help:"config file path (default: ./sbx.yaml or ~/.sbx.yaml)" placeholder:"PATH"`
+	Config     string   `name:"config" short:"C" help:"config file path (default: ./sbx.yaml or ~/.sbx.yaml)" placeholder:"PATH"`
 	Profile    string   `name:"profile" help:"profile name (default: default)" placeholder:"NAME"`
+	CommandStr string   `name:"command" short:"c" help:"command string to run inside the sandbox" placeholder:"CMD"`
 	Dump       bool     `name:"dump" hidden:"" help:"print the generated sandbox spec and exit"`
 	K8s        *bool    `name:"k8s" negatable:"" help:"enable/disable k8s proxy (overrides profile)"`
 	K8sConfig  *string  `name:"k8s-config" help:"override k8s.config (kubeconfig path)" placeholder:"PATH"`
@@ -32,9 +33,12 @@ func Run(rawArgs []string) int {
 		return failCode(err)
 	}
 
-	if !c.Dump && len(c.Command) == 0 {
+	if !c.Dump && len(c.Command) == 0 && c.CommandStr == "" {
 		fmt.Fprintln(os.Stderr, "sbx: missing command")
 		return 2
+	}
+	if c.CommandStr != "" && len(c.Command) == 0 {
+		c.Command = []string{"/bin/sh", "-c", c.CommandStr}
 	}
 
 	selected, err := config.LoadSelectedProfile(c.Config, c.Profile)

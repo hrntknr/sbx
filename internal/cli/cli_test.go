@@ -160,3 +160,11 @@ func TestApplyCLIOverridesUnsetKeepsProfile(t *testing.T) {
 		t.Errorf("contexts = %v, want [prof]", prof.K8s.Contexts)
 	}
 }
+
+func TestNormalizeArgsCFlag(t *testing.T) {
+	in := []string{"-c", "echo hello"}
+	got := normalizeArgs(in, newParser(t))
+	if !slices.Equal(got, in) {
+		t.Errorf("got %v, want %v", got, in)
+	}
+}
