@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0](https://github.com/hrntknr/sbx/compare/sbx-v1.3.0...sbx-v1.4.0) (2026-05-03)
+
+
+### Features
+
+* **cli:** add -c flag for shell command compatibility ([#8](https://github.com/hrntknr/sbx/issues/8)) ([acf9177](https://github.com/hrntknr/sbx/commit/acf91771b3842358048fff60a874158f8e4a39b6))
+* **cli:** support --sbx- prefixed flags after command ([f46540d](https://github.com/hrntknr/sbx/commit/f46540d9eaefeea2f01667418dd960cde320e0e4))
+
 ## [1.3.0](https://github.com/hrntknr/sbx/compare/sbx-v1.2.0...sbx-v1.3.0) (2026-05-02)
 
 
