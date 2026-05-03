@@ -36,7 +36,8 @@ The system tmp paths (`/tmp` / `/private/tmp` and `$TMPDIR`) are always allowed 
 
 | Flag                 | Description                                      |
 | -------------------- | ------------------------------------------------ |
-| `-c, --config PATH`  | Config file path                                 |
+| `-C, --config PATH`  | Config file path                                 |
+| `-c, --command CMD`  | Command string to run inside the sandbox         |
 | `--profile NAME`     | Profile name (default: `default`)                |
 | `--k8s` / `--no-k8s` | Enable/disable the k8s proxy (overrides profile) |
 | `--k8s-config PATH`  | Override kubeconfig path                         |
