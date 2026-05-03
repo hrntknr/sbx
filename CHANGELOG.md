@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/hrntknr/sbx/compare/sbx-v1.4.0...sbx-v1.4.1) (2026-05-03)
+
+
+### Bug Fixes
+
+* **cli:** remove -c flag compatibility ([8857147](https://github.com/hrntknr/sbx/commit/8857147fea9b8eaca4bd66ae334ccdc9911fd105))
+
 ## [1.4.0](https://github.com/hrntknr/sbx/compare/sbx-v1.3.0...sbx-v1.4.0) (2026-05-03)
 
 
