@@ -107,6 +107,9 @@ func Start(rules []Rule) (*Proxy, error) {
 		if err != nil {
 			return nil, err
 		}
+		if len(resolved) == 0 {
+			return nil, nil
+		}
 	}
 
 	handlers := map[string]http.Handler{}
@@ -184,9 +187,6 @@ func expandContexts(patterns, available []string) ([]string, error) {
 				matched = append(matched, name)
 			}
 		}
-		if len(matched) == 0 {
-			return nil, fmt.Errorf("no contexts matched pattern %q", pattern)
-		}
 		sort.Strings(matched)
 		for _, name := range matched {
 			add(name)
@@ -200,10 +200,9 @@ func resolveRules(rules []Rule, available []string, current string) ([]resolvedC
 	if current != "" {
 		ordered = moveToFront(ordered, current)
 	}
-	matchedRules := make([]bool, len(rules))
 	var out []resolvedContext
 	for _, name := range ordered {
-		for i, rule := range rules {
+		for _, rule := range rules {
 			ok, err := path.Match(rule.Pattern, name)
 			if err != nil {
 				return nil, fmt.Errorf("invalid context pattern %q: %w", rule.Pattern, err)
@@ -211,20 +210,11 @@ func resolveRules(rules []Rule, available []string, current string) ([]resolvedC
 			if !ok {
 				continue
 			}
-			matchedRules[i] = true
 			if rule.Action == "allow" {
 				out = append(out, resolvedContext{name: name, mode: rule.Mode})
 			}
 			break
 		}
-	}
-	for i, rule := range rules {
-		if rule.Action == "allow" && !matchedRules[i] {
-			return nil, fmt.Errorf("no contexts matched pattern %q", rule.Pattern)
-		}
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("no contexts allowed by k8s rules")
 	}
 	return out, nil
 }

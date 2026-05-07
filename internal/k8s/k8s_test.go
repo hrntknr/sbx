@@ -25,7 +25,7 @@ func TestExpandContexts(t *testing.T) {
 		{"mixed", []string{"dev", "prod-*"}, []string{"dev", "prod-1", "prod-2"}, false},
 		{"dedup", []string{"dev", "*"}, []string{"dev", "prod-1", "prod-2", "stage"}, false},
 		{"unknown literal", []string{"missing"}, nil, true},
-		{"glob no match", []string{"qa-*"}, nil, true},
+		{"glob no match", []string{"qa-*"}, nil, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -63,17 +63,23 @@ func TestResolveRules(t *testing.T) {
 	}
 }
 
-func TestResolveRulesErrorsWhenAllowMatchesNothing(t *testing.T) {
-	_, err := resolveRules([]Rule{{Action: "allow", Mode: ModeReadOnly, Pattern: "missing-*"}}, []string{"dev"}, "")
-	if err == nil {
-		t.Fatal("expected missing allow pattern to fail")
+func TestResolveRulesAllowsNoMatches(t *testing.T) {
+	got, err := resolveRules([]Rule{{Action: "allow", Mode: ModeReadOnly, Pattern: "missing-*"}}, []string{"dev"}, "")
+	if err != nil {
+		t.Fatalf("resolveRules: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("resolveRules = %+v, want empty", got)
 	}
 }
 
-func TestResolveRulesErrorsWhenNothingAllowed(t *testing.T) {
-	_, err := resolveRules([]Rule{{Action: "deny", Mode: ModeReadWrite, Pattern: "*"}}, []string{"dev"}, "")
-	if err == nil {
-		t.Fatal("expected all-deny rules to fail")
+func TestResolveRulesAllowsNothingAllowed(t *testing.T) {
+	got, err := resolveRules([]Rule{{Action: "deny", Mode: ModeReadWrite, Pattern: "*"}}, []string{"dev"}, "")
+	if err != nil {
+		t.Fatalf("resolveRules: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("resolveRules = %+v, want empty", got)
 	}
 }
 
@@ -160,10 +166,40 @@ func TestStartEmptyKubeconfigButContextRequestedErrors(t *testing.T) {
 	}
 }
 
+func TestStartSkipsWhenRulesAllowNoContexts(t *testing.T) {
+	path := writeKubeconfig(t, `
+apiVersion: v1
+kind: Config
+clusters:
+- name: dev
+  cluster:
+    server: https://127.0.0.1:65535
+contexts:
+- name: dev
+  context:
+    cluster: dev
+current-context: dev
+`)
+	t.Setenv("KUBECONFIG", path)
+	proxy, err := Start([]Rule{{Action: "allow", Mode: ModeReadWrite, Pattern: "missing-*"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if proxy != nil {
+		proxy.Stop()
+		t.Fatal("expected nil proxy when no contexts match rules")
+	}
+}
+
 func writeEmptyKubeconfig(t *testing.T) string {
 	t.Helper()
+	return writeKubeconfig(t, "apiVersion: v1\nkind: Config\n")
+}
+
+func writeKubeconfig(t *testing.T, contents string) string {
+	t.Helper()
 	path := t.TempDir() + "/config"
-	if err := os.WriteFile(path, []byte("apiVersion: v1\nkind: Config\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
