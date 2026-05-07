@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/hrntknr/sbx/internal/config"
@@ -53,6 +54,12 @@ type resolvedTarget struct {
 	HostName string
 	Port     string
 	User     string
+}
+
+type ptyRequest struct {
+	term string
+	rows uint32
+	cols uint32
 }
 
 // Start starts the proxy and writes the injected ssh command/config tree.
@@ -321,13 +328,18 @@ func hostAllowed(host string, rules []config.SSHRule) bool {
 
 func (p *Proxy) handleSession(channel ssh.Channel, requests <-chan *ssh.Request, innerUser string, explicitUser bool) {
 	defer channel.Close()
-	var pty bool
+	var ptyReq *ptyRequest
 	var started bool
 	env := map[string]string{}
 	for req := range requests {
 		switch req.Type {
 		case "pty-req":
-			pty = true
+			payload, err := parsePTYRequest(req.Payload)
+			if err != nil {
+				req.Reply(false, nil)
+				continue
+			}
+			ptyReq = &payload
 			req.Reply(true, nil)
 		case "env":
 			var payload struct{ Name, Value string }
@@ -337,7 +349,14 @@ func (p *Proxy) handleSession(channel ssh.Channel, requests <-chan *ssh.Request,
 			}
 			env[payload.Name] = payload.Value
 			req.Reply(true, nil)
-		case "window-change", "signal":
+		case "window-change":
+			rows, cols, err := parseWindowChange(req.Payload)
+			if err == nil && ptyReq != nil {
+				ptyReq.rows = rows
+				ptyReq.cols = cols
+			}
+			req.Reply(err == nil, nil)
+		case "signal":
 			req.Reply(true, nil)
 		case "exec":
 			command, err := parseStringPayload(req.Payload)
@@ -352,7 +371,7 @@ func (p *Proxy) handleSession(channel ssh.Channel, requests <-chan *ssh.Request,
 			}
 			req.Reply(true, nil)
 			started = true
-			p.runOuterSSH(channel, host, command, "", filteredEnv(env), pty, explicitUser, explicitPort, target)
+			p.runOuterSSH(channel, host, command, "", filteredEnv(env), ptyReq, explicitUser, explicitPort, target, requests)
 			return
 		case "shell":
 			host, explicitPort, target, err := p.targetFromEnv(env, innerUser, explicitUser)
@@ -362,7 +381,7 @@ func (p *Proxy) handleSession(channel ssh.Channel, requests <-chan *ssh.Request,
 			}
 			req.Reply(true, nil)
 			started = true
-			p.runOuterSSH(channel, host, "", "", filteredEnv(env), pty, explicitUser, explicitPort, target)
+			p.runOuterSSH(channel, host, "", "", filteredEnv(env), ptyReq, explicitUser, explicitPort, target, requests)
 			return
 		case "subsystem":
 			subsystem, err := parseStringPayload(req.Payload)
@@ -377,7 +396,7 @@ func (p *Proxy) handleSession(channel ssh.Channel, requests <-chan *ssh.Request,
 			}
 			req.Reply(true, nil)
 			started = true
-			p.runOuterSSH(channel, host, "", subsystem, filteredEnv(env), pty, explicitUser, explicitPort, target)
+			p.runOuterSSH(channel, host, "", subsystem, filteredEnv(env), ptyReq, explicitUser, explicitPort, target, requests)
 			return
 		default:
 			req.Reply(false, nil)
@@ -397,6 +416,53 @@ func parseStringPayload(payload []byte) (string, error) {
 		return "", errors.New("short string payload")
 	}
 	return string(payload[4 : 4+n]), nil
+}
+
+func parsePTYRequest(payload []byte) (ptyRequest, error) {
+	term, rest, err := parseStringPrefix(payload)
+	if err != nil {
+		return ptyRequest{}, err
+	}
+	cols, rest, err := parseUint32Prefix(rest)
+	if err != nil {
+		return ptyRequest{}, err
+	}
+	rows, _, err := parseUint32Prefix(rest)
+	if err != nil {
+		return ptyRequest{}, err
+	}
+	return ptyRequest{term: term, rows: rows, cols: cols}, nil
+}
+
+func parseWindowChange(payload []byte) (uint32, uint32, error) {
+	cols, rest, err := parseUint32Prefix(payload)
+	if err != nil {
+		return 0, 0, err
+	}
+	rows, _, err := parseUint32Prefix(rest)
+	if err != nil {
+		return 0, 0, err
+	}
+	return rows, cols, nil
+}
+
+func parseStringPrefix(payload []byte) (string, []byte, error) {
+	if len(payload) < 4 {
+		return "", nil, errors.New("short payload")
+	}
+	n := int(payload[0])<<24 | int(payload[1])<<16 | int(payload[2])<<8 | int(payload[3])
+	if n < 0 || len(payload) < 4+n {
+		return "", nil, errors.New("short string payload")
+	}
+	return string(payload[4 : 4+n]), payload[4+n:], nil
+}
+
+func parseUint32Prefix(payload []byte) (uint32, []byte, error) {
+	if len(payload) < 4 {
+		return 0, nil, errors.New("short uint32 payload")
+	}
+	v := uint32(payload[0])<<24 | uint32(payload[1])<<16 | uint32(payload[2])<<8 | uint32(payload[3])
+	return v, payload[4:], nil
 }
 
 func (p *Proxy) targetFromEnv(env map[string]string, innerUser string, explicitUser bool) (string, bool, resolvedTarget, error) {
@@ -427,7 +493,7 @@ func filteredEnv(env map[string]string) map[string]string {
 	return out
 }
 
-func (p *Proxy) runOuterSSH(channel ssh.Channel, host, remoteCommand, subsystem string, env map[string]string, pty, explicitUser, explicitPort bool, target resolvedTarget) {
+func (p *Proxy) runOuterSSH(channel ssh.Channel, host, remoteCommand, subsystem string, env map[string]string, ptyReq *ptyRequest, explicitUser, explicitPort bool, target resolvedTarget, requests <-chan *ssh.Request) {
 	args := []string{"-o", "BatchMode=yes"}
 	keys := make([]string, 0, len(env))
 	for k := range env {
@@ -438,7 +504,7 @@ func (p *Proxy) runOuterSSH(channel ssh.Channel, host, remoteCommand, subsystem 
 		v := env[k]
 		args = append(args, "-o", "SetEnv="+k+"="+sshConfigQuote(v))
 	}
-	if pty {
+	if ptyReq != nil {
 		args = append(args, "-tt")
 	} else {
 		args = append(args, "-T")
@@ -459,6 +525,11 @@ func (p *Proxy) runOuterSSH(channel ssh.Channel, host, remoteCommand, subsystem 
 		args = append(args, remoteCommand)
 	}
 	cmd := exec.Command(p.realSSH, args...)
+	if ptyReq != nil {
+		p.runOuterSSHWithPTY(channel, cmd, ptyReq, requests)
+		return
+	}
+	go discardSessionRequests(requests)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		sendExit(channel, 1)
@@ -502,6 +573,67 @@ func (p *Proxy) runOuterSSH(channel ssh.Channel, host, remoteCommand, subsystem 
 		}
 	}
 	sendExit(channel, code)
+}
+
+func (p *Proxy) runOuterSSHWithPTY(channel ssh.Channel, cmd *exec.Cmd, ptyReq *ptyRequest, requests <-chan *ssh.Request) {
+	cmd.Env = append(os.Environ(), "TERM="+ptyReq.term)
+	if !p.trackCmd(cmd) {
+		sendExit(channel, 1)
+		return
+	}
+	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(ptyReq.rows), Cols: uint16(ptyReq.cols)})
+	if err != nil {
+		p.untrackCmd(cmd)
+		sendExit(channel, 1)
+		return
+	}
+	go handlePTYSessionRequests(requests, ptyFile)
+	go func() { _, _ = io.Copy(ptyFile, channel) }()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); _, _ = io.Copy(channel, ptyFile) }()
+	err = cmd.Wait()
+	p.untrackCmd(cmd)
+	wg.Wait()
+	_ = ptyFile.Close()
+	code := 0
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else {
+			code = 1
+		}
+	}
+	sendExit(channel, code)
+}
+
+func handlePTYSessionRequests(requests <-chan *ssh.Request, ptyFile *os.File) {
+	for req := range requests {
+		switch req.Type {
+		case "window-change":
+			rows, cols, err := parseWindowChange(req.Payload)
+			if err == nil {
+				err = pty.Setsize(ptyFile, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+			}
+			req.Reply(err == nil, nil)
+		case "signal":
+			req.Reply(true, nil)
+		default:
+			req.Reply(false, nil)
+		}
+	}
+}
+
+func discardSessionRequests(requests <-chan *ssh.Request) {
+	for req := range requests {
+		switch req.Type {
+		case "window-change", "signal":
+			req.Reply(true, nil)
+		default:
+			req.Reply(false, nil)
+		}
+	}
 }
 
 func sendExit(channel ssh.Channel, code int) {

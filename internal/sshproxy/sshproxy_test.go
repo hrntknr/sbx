@@ -1,6 +1,7 @@
 package sshproxy
 
 import (
+	"encoding/binary"
 	"net"
 	"os"
 	"os/exec"
@@ -151,6 +152,49 @@ func TestSSHConfigQuote(t *testing.T) {
 			t.Errorf("sshConfigQuote(%q) = %q, want %q", c.in, got, c.out)
 		}
 	}
+}
+
+func TestParsePTYRequest(t *testing.T) {
+	payload := appendString(nil, "xterm-256color")
+	payload = appendUint32(payload, 120)
+	payload = appendUint32(payload, 40)
+	payload = appendUint32(payload, 0)
+	payload = appendUint32(payload, 0)
+	payload = appendString(payload, "")
+
+	got, err := parsePTYRequest(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.term != "xterm-256color" || got.cols != 120 || got.rows != 40 {
+		t.Fatalf("parsePTYRequest = %+v", got)
+	}
+}
+
+func TestParseWindowChange(t *testing.T) {
+	payload := appendUint32(nil, 100)
+	payload = appendUint32(payload, 30)
+	payload = appendUint32(payload, 0)
+	payload = appendUint32(payload, 0)
+
+	rows, cols, err := parseWindowChange(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 30 || cols != 100 {
+		t.Fatalf("parseWindowChange = rows %d cols %d", rows, cols)
+	}
+}
+
+func appendString(dst []byte, s string) []byte {
+	dst = appendUint32(dst, uint32(len(s)))
+	return append(dst, s...)
+}
+
+func appendUint32(dst []byte, v uint32) []byte {
+	var buf [4]byte
+	binary.BigEndian.PutUint32(buf[:], v)
+	return append(dst, buf[:]...)
 }
 
 func TestStopClosesActiveConn(t *testing.T) {
