@@ -39,11 +39,7 @@ The system tmp paths (`/tmp` / `/private/tmp` and `$TMPDIR`) are always allowed 
 | `-c, --config PATH`  | Config file path                                 |
 | `--profile NAME`     | Profile name (default: `default`)                |
 | `--k8s` / `--no-k8s` | Enable/disable the k8s proxy (overrides profile) |
-| `--k8s-config PATH`  | Override kubeconfig path                         |
-| `--k8s-context CTX`  | Override contexts (comma-separated, repeatable)  |
-| `--k8s-mode rw\|ro`  | `ro` rejects POST/PUT/PATCH/DELETE at the proxy  |
 | `--ssh` / `--no-ssh` | Enable/disable the ssh proxy (overrides profile) |
-| `--ssh-rule RULE`    | Override ssh rules (comma-separated, repeatable) |
 
 ## Config
 
@@ -86,13 +82,14 @@ rules:
 
 ### k8s
 
-When `k8s` is set on a profile (either `k8s: true` or a mapping), sbx starts a localhost HTTP proxy in front of the upstream Kubernetes API server(s) and writes a kubeconfig pointing at it. `KUBECONFIG` is set inside the sandbox, and the kubeconfig directory is auto-allowed for read.
+When `k8s` is set on a profile (either `k8s: true` or a mapping), sbx starts a localhost HTTP proxy in front of the upstream Kubernetes API server(s) and writes a kubeconfig pointing at it. `KUBECONFIG` is set inside the sandbox, and the kubeconfig directory is auto-allowed for read. Empty `rules` means every source context is exposed read/write.
 
 ```yaml
 k8s:
-  config: ~/.kube/config       # source kubeconfig (default: $KUBECONFIG / ~/.kube/config)
-  context: ["prod-*", "stg"]   # context names or globs; empty = all contexts
-  mode: ro                     # If set to `ro`, it will be limited to read-only APIs such as `kubectl get`.
+  rules:
+    - allow(r, prod-*)         # context globs; r blocks mutating requests
+    - allow(rw, dev)
+    - deny(rw, *)
 ```
 
 ### ssh

@@ -29,21 +29,20 @@ type Profile struct {
 }
 
 // K8sProfile enables a kubectl proxy alongside the sandbox. Presence of the
-// profile means enabled; nil means disabled. Namespace is inherited from
-// each source context and is not configurable.
-//
-// Contexts may be literal context names or globs (path.Match syntax: `*`,
-// `?`, `[...]`). Each resolved context gets its own entry in the generated
-// kubeconfig, served through a single localhost proxy. Empty list means
-// "expose every context in the source kubeconfig", current-context first.
-//
-// Mode controls request filtering at the proxy:
-//   - "rw" (default): no filtering, the sandbox can mutate cluster state.
-//   - "ro":           POST/PUT/PATCH/DELETE are rejected at the proxy.
+// profile means enabled; nil means disabled. Namespace is inherited from each
+// source context and is not configurable. Empty Rules means expose every
+// context read/write, current-context first.
 type K8sProfile struct {
-	Config   string
-	Contexts []string
-	Mode     string
+	Rules []K8sRule
+}
+
+// K8sRule controls which source kubeconfig contexts are exposed through the
+// proxy. Pattern uses path.Match syntax: `*`, `?`, `[...]`. Mode is "rw" or
+// "r" and is applied to allowed contexts; deny rules ignore Mode.
+type K8sRule struct {
+	Action  string
+	Mode    string
+	Pattern string
 }
 
 // SSHRule controls which resolved SSH destination hosts are exposed through
@@ -101,7 +100,7 @@ func (s *SSHProfile) UnmarshalYAML(node *yaml.Node) error {
 // UnmarshalYAML accepts:
 //
 //	k8s: true              -> empty profile (defaults)
-//	k8s: { ... }           -> mapping with config/context/mode
+//	k8s: { ... }           -> mapping with config/rules
 //
 // `k8s: false` is rejected; omit the field to disable.
 func (k *K8sProfile) UnmarshalYAML(node *yaml.Node) error {
@@ -119,14 +118,20 @@ func (k *K8sProfile) UnmarshalYAML(node *yaml.Node) error {
 		return fmt.Errorf("k8s: must be `true` or a mapping")
 	}
 	var raw struct {
-		Config  string        `yaml:"config"`
-		Context scalarOrSlice `yaml:"context"`
-		Mode    string        `yaml:"mode"`
+		Rules scalarOrSlice `yaml:"rules"`
 	}
 	if err := node.Decode(&raw); err != nil {
 		return err
 	}
-	k.Config, k.Contexts, k.Mode = raw.Config, raw.Context, raw.Mode
+	rules := make([]K8sRule, len(raw.Rules))
+	for i, l := range raw.Rules {
+		r, err := ParseK8sRule(l)
+		if err != nil {
+			return fmt.Errorf("k8s.rules line %d: %w", i+1, err)
+		}
+		rules[i] = r
+	}
+	k.Rules = rules
 	return nil
 }
 
@@ -266,6 +271,33 @@ func selectProfile(data []byte, profile string) (rawProfile, error) {
 		}
 	}
 	return rawProfile{}, fmt.Errorf("profile %q not found", profile)
+}
+
+// ParseK8sRule parses "ACTION(MODE, PATTERN)" e.g. "allow(r, prod-*)".
+func ParseK8sRule(s string) (K8sRule, error) {
+	s = strings.TrimSpace(s)
+	open := strings.IndexByte(s, '(')
+	if open <= 0 || !strings.HasSuffix(s, ")") {
+		return K8sRule{}, fmt.Errorf("invalid k8s rule %q (expected ACTION(MODE, PATTERN))", s)
+	}
+	action := strings.ToLower(strings.TrimSpace(s[:open]))
+	if action != "allow" && action != "deny" {
+		return K8sRule{}, fmt.Errorf("invalid action %q (must be allow or deny)", action)
+	}
+	inner := s[open+1 : len(s)-1]
+	comma := strings.Index(inner, ",")
+	if comma < 0 {
+		return K8sRule{}, fmt.Errorf("invalid k8s rule %q (missing comma)", s)
+	}
+	mode := strings.ToLower(strings.TrimSpace(inner[:comma]))
+	if mode != "rw" && mode != "r" {
+		return K8sRule{}, fmt.Errorf("invalid k8s mode %q (must be rw or r)", mode)
+	}
+	pattern := strings.TrimSpace(inner[comma+1:])
+	if pattern == "" {
+		return K8sRule{}, fmt.Errorf("invalid k8s rule %q (empty pattern)", s)
+	}
+	return K8sRule{Action: action, Mode: mode, Pattern: pattern}, nil
 }
 
 // ParseSSHRule parses "ACTION(PATTERN)" e.g. "allow(github.com)".
