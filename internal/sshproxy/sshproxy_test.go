@@ -3,9 +3,11 @@ package sshproxy
 import (
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hrntknr/sbx/internal/config"
 )
@@ -97,5 +99,59 @@ func TestWriteInjectedFiles(t *testing.T) {
 	}
 	if strings.Contains(string(sshConfig), "ProxyCommand") || strings.Contains(string(sshScript), "__sbx-ssh-connect") || strings.Contains(string(sshScript), "SBX_SSH_TARGET") {
 		t.Errorf("injected files should not depend on sbx helper\nconfig:\n%s\nscript:\n%s", sshConfig, sshScript)
+	}
+}
+
+func TestSSHConfigQuote(t *testing.T) {
+	cases := []struct {
+		in, out string
+	}{
+		{"plain", "plain"},
+		{"", `""`},
+		{"with space", `"with space"`},
+		{"tab\there", "\"tab\there\""},
+		{`a"b`, `"a\"b"`},
+		{`a\b`, `"a\\b"`},
+	}
+	for _, c := range cases {
+		if got := sshConfigQuote(c.in); got != c.out {
+			t.Errorf("sshConfigQuote(%q) = %q, want %q", c.in, got, c.out)
+		}
+	}
+}
+
+func TestStopClosesActiveConn(t *testing.T) {
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Skip("ssh not available")
+	}
+	p, err := Start(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := p.listener.Addr().String()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		p.Stop()
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		p.mu.Lock()
+		n := len(p.conns)
+		p.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	done := make(chan struct{})
+	go func() { p.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not return — likely hanging on active conn")
 	}
 }

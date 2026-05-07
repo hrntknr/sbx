@@ -42,6 +42,11 @@ type Proxy struct {
 	rules    []config.SSHRule
 	sentinel string
 	port     string
+
+	mu     sync.Mutex
+	closed bool
+	conns  map[net.Conn]struct{}
+	cmds   map[*exec.Cmd]struct{}
 }
 
 type resolvedTarget struct {
@@ -93,6 +98,8 @@ func Start(opts Options) (*Proxy, error) {
 		rules:    opts.Rules,
 		sentinel: sentinel,
 		port:     port,
+		conns:    map[net.Conn]struct{}{},
+		cmds:     map[*exec.Cmd]struct{}{},
 	}
 	if err := p.writeInjectedFiles(); err != nil {
 		p.Stop()
@@ -115,6 +122,38 @@ func serverConfig() (*ssh.ServerConfig, error) {
 	cfg := &ssh.ServerConfig{NoClientAuth: true}
 	cfg.AddHostKey(signer)
 	return cfg, nil
+}
+
+func (p *Proxy) trackConn(c net.Conn) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return false
+	}
+	p.conns[c] = struct{}{}
+	return true
+}
+
+func (p *Proxy) untrackConn(c net.Conn) {
+	p.mu.Lock()
+	delete(p.conns, c)
+	p.mu.Unlock()
+}
+
+func (p *Proxy) trackCmd(c *exec.Cmd) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return false
+	}
+	p.cmds[c] = struct{}{}
+	return true
+}
+
+func (p *Proxy) untrackCmd(c *exec.Cmd) {
+	p.mu.Lock()
+	delete(p.cmds, c)
+	p.mu.Unlock()
 }
 
 func (p *Proxy) writeInjectedFiles() error {
@@ -147,6 +186,27 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
+// sshConfigQuote quotes a value for use in an OpenSSH SetEnv directive,
+// which is parsed via argv_split (whitespace-separated, double-quote aware).
+// Empty strings, whitespace, double quotes, and backslashes require quoting.
+func sshConfigQuote(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t\"\\") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '"' || c == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(c)
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
 func (p *Proxy) serve() {
 	defer p.wg.Done()
 	for {
@@ -159,9 +219,14 @@ func (p *Proxy) serve() {
 				continue
 			}
 		}
+		if !p.trackConn(conn) {
+			_ = conn.Close()
+			return
+		}
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
+			defer p.untrackConn(conn)
 			p.handleConn(conn)
 		}()
 	}
@@ -371,7 +436,7 @@ func (p *Proxy) runOuterSSH(channel ssh.Channel, host, remoteCommand, subsystem 
 	sort.Strings(keys)
 	for _, k := range keys {
 		v := env[k]
-		args = append(args, "-o", "SetEnv="+k+"="+v)
+		args = append(args, "-o", "SetEnv="+k+"="+sshConfigQuote(v))
 	}
 	if pty {
 		args = append(args, "-tt")
@@ -409,7 +474,12 @@ func (p *Proxy) runOuterSSH(channel ssh.Channel, host, remoteCommand, subsystem 
 		sendExit(channel, 1)
 		return
 	}
+	if !p.trackCmd(cmd) {
+		sendExit(channel, 1)
+		return
+	}
 	if err := cmd.Start(); err != nil {
+		p.untrackCmd(cmd)
 		sendExit(channel, 1)
 		return
 	}
@@ -419,6 +489,7 @@ func (p *Proxy) runOuterSSH(channel ssh.Channel, host, remoteCommand, subsystem 
 	go func() { defer wg.Done(); _, _ = io.Copy(channel, stdout) }()
 	go func() { defer wg.Done(); _, _ = io.Copy(channel.Stderr(), stderr) }()
 	err = cmd.Wait()
+	p.untrackCmd(cmd)
 	_ = stdin.Close()
 	wg.Wait()
 	code := 0
@@ -447,10 +518,21 @@ func (p *Proxy) Stop() {
 	default:
 		close(p.done)
 	}
+	p.mu.Lock()
+	p.closed = true
 	if p.listener != nil {
 		_ = p.listener.Close()
 		p.listener = nil
 	}
+	for c := range p.conns {
+		_ = c.Close()
+	}
+	for c := range p.cmds {
+		if c.Process != nil {
+			_ = c.Process.Kill()
+		}
+	}
+	p.mu.Unlock()
 	p.wg.Wait()
 	if p.Dir != "" {
 		_ = os.RemoveAll(p.Dir)
