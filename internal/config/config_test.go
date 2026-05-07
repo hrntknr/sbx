@@ -58,6 +58,35 @@ func TestParseMode(t *testing.T) {
 	}
 }
 
+func TestParseSSHRule(t *testing.T) {
+	cases := []struct {
+		in   string
+		want SSHRule
+	}{
+		{"allow(github.com)", SSHRule{"allow", "github.com"}},
+		{"deny(*.internal)", SSHRule{"deny", "*.internal"}},
+		{"  allow ( prod-[12] ) ", SSHRule{"allow", "prod-[12]"}},
+	}
+	for _, c := range cases {
+		got, err := ParseSSHRule(c.in)
+		if err != nil {
+			t.Errorf("ParseSSHRule(%q): %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("ParseSSHRule(%q) = %+v, want %+v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestParseSSHRuleErrors(t *testing.T) {
+	for _, in := range []string{"allow github.com", "allow()", "reject(*)"} {
+		if _, err := ParseSSHRule(in); err == nil {
+			t.Errorf("ParseSSHRule(%q): expected error", in)
+		}
+	}
+}
+
 func writeConfig(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "sbx.yaml")
@@ -244,6 +273,65 @@ rules:
 	}
 	if p.K8s != nil {
 		t.Fatalf("K8s should be nil: %+v", p.K8s)
+	}
+}
+
+func TestLoadProfileSSHBool(t *testing.T) {
+	path := writeConfig(t, `
+name: ssh
+ssh: true
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	p, err := LoadSelectedProfile(path, "ssh")
+	if err != nil {
+		t.Fatalf("LoadSelectedProfile: %v", err)
+	}
+	if p.SSH == nil {
+		t.Fatalf("SSH should be enabled")
+	}
+	if len(p.SSH.Rules) != 0 {
+		t.Fatalf("SSH defaults wrong: %+v", p.SSH)
+	}
+}
+
+func TestLoadProfileSSHFalseRejected(t *testing.T) {
+	path := writeConfig(t, `
+name: ssh
+ssh: false
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	if _, err := LoadSelectedProfile(path, "ssh"); err == nil {
+		t.Fatal("expected error for ssh: false")
+	}
+}
+
+func TestLoadProfileSSHMapping(t *testing.T) {
+	path := writeConfig(t, `
+name: ssh
+ssh:
+  rules:
+    - allow(github.com)
+    - deny(*.internal)
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	p, err := LoadSelectedProfile(path, "ssh")
+	if err != nil {
+		t.Fatalf("LoadSelectedProfile: %v", err)
+	}
+	if p.SSH == nil {
+		t.Fatalf("SSH should be enabled")
+	}
+	want := []SSHRule{{"allow", "github.com"}, {"deny", "*.internal"}}
+	if len(p.SSH.Rules) != len(want) {
+		t.Fatalf("SSH.Rules = %+v", p.SSH.Rules)
+	}
+	for i := range want {
+		if p.SSH.Rules[i] != want[i] {
+			t.Fatalf("SSH.Rules[%d] = %+v, want %+v", i, p.SSH.Rules[i], want[i])
+		}
 	}
 }
 

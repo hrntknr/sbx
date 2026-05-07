@@ -92,7 +92,9 @@ func TestNormalizeArgsBareDashSbxIgnored(t *testing.T) {
 
 func TestApplyCLIOverridesNoChange(t *testing.T) {
 	prof := config.Profile{K8s: &config.K8sProfile{Mode: "rw"}}
-	applyCLIOverrides(&prof, &opts{})
+	if err := applyCLIOverrides(&prof, &opts{}); err != nil {
+		t.Fatal(err)
+	}
 	if prof.K8s == nil || prof.K8s.Mode != "rw" {
 		t.Fatalf("profile mutated: %+v", prof)
 	}
@@ -101,7 +103,9 @@ func TestApplyCLIOverridesNoChange(t *testing.T) {
 func TestApplyCLIOverridesNoK8sDisables(t *testing.T) {
 	f := false
 	prof := config.Profile{K8s: &config.K8sProfile{Mode: "rw"}}
-	applyCLIOverrides(&prof, &opts{K8s: &f})
+	if err := applyCLIOverrides(&prof, &opts{K8s: &f}); err != nil {
+		t.Fatal(err)
+	}
 	if prof.K8s != nil {
 		t.Fatalf("--no-k8s should clear K8s, got %+v", prof.K8s)
 	}
@@ -110,7 +114,9 @@ func TestApplyCLIOverridesNoK8sDisables(t *testing.T) {
 func TestApplyCLIOverridesK8sEnables(t *testing.T) {
 	tr := true
 	prof := config.Profile{}
-	applyCLIOverrides(&prof, &opts{K8s: &tr})
+	if err := applyCLIOverrides(&prof, &opts{K8s: &tr}); err != nil {
+		t.Fatal(err)
+	}
 	if prof.K8s == nil {
 		t.Fatal("--k8s should enable K8s on profile without it")
 	}
@@ -119,7 +125,9 @@ func TestApplyCLIOverridesK8sEnables(t *testing.T) {
 func TestApplyCLIOverridesOverrideImpliesEnable(t *testing.T) {
 	mode := "ro"
 	prof := config.Profile{}
-	applyCLIOverrides(&prof, &opts{K8sMode: &mode})
+	if err := applyCLIOverrides(&prof, &opts{K8sMode: &mode}); err != nil {
+		t.Fatal(err)
+	}
 	if prof.K8s == nil || prof.K8s.Mode != "ro" {
 		t.Fatalf("--k8s-mode should enable and set mode, got %+v", prof.K8s)
 	}
@@ -133,11 +141,13 @@ func TestApplyCLIOverridesFieldsWin(t *testing.T) {
 	}}
 	cfg := "/cli.yaml"
 	mode := "ro"
-	applyCLIOverrides(&prof, &opts{
+	if err := applyCLIOverrides(&prof, &opts{
 		K8sConfig:  &cfg,
 		K8sContext: []string{"cli"},
 		K8sMode:    &mode,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if prof.K8s.Config != cfg || prof.K8s.Mode != mode {
 		t.Errorf("CLI fields didn't win: %+v", prof.K8s)
 	}
@@ -152,11 +162,57 @@ func TestApplyCLIOverridesUnsetKeepsProfile(t *testing.T) {
 		Contexts: []string{"prof"},
 		Mode:     "rw",
 	}}
-	applyCLIOverrides(&prof, &opts{})
+	if err := applyCLIOverrides(&prof, &opts{}); err != nil {
+		t.Fatal(err)
+	}
 	if prof.K8s.Config != "/profile.yaml" || prof.K8s.Mode != "rw" {
 		t.Errorf("unset CLI fields shouldn't change profile: %+v", prof.K8s)
 	}
 	if !slices.Equal(prof.K8s.Contexts, []string{"prof"}) {
 		t.Errorf("contexts = %v, want [prof]", prof.K8s.Contexts)
+	}
+}
+
+func TestApplyCLIOverridesNoSSHDisables(t *testing.T) {
+	f := false
+	prof := config.Profile{SSH: &config.SSHProfile{Rules: []config.SSHRule{{Action: "allow", Pattern: "profile"}}}}
+	if err := applyCLIOverrides(&prof, &opts{SSH: &f}); err != nil {
+		t.Fatal(err)
+	}
+	if prof.SSH != nil {
+		t.Fatalf("--no-ssh should clear SSH, got %+v", prof.SSH)
+	}
+}
+
+func TestApplyCLIOverridesSSHEnables(t *testing.T) {
+	tr := true
+	prof := config.Profile{}
+	if err := applyCLIOverrides(&prof, &opts{SSH: &tr}); err != nil {
+		t.Fatal(err)
+	}
+	if prof.SSH == nil {
+		t.Fatal("--ssh should enable SSH on profile without it")
+	}
+}
+
+func TestApplyCLIOverridesSSHFieldsWin(t *testing.T) {
+	prof := config.Profile{SSH: &config.SSHProfile{
+		Rules: []config.SSHRule{{Action: "allow", Pattern: "profile"}},
+	}}
+	if err := applyCLIOverrides(&prof, &opts{
+		SSHRule: []string{"allow(github.com)", "deny(*.internal)"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []config.SSHRule{{Action: "allow", Pattern: "github.com"}, {Action: "deny", Pattern: "*.internal"}}
+	if !slices.Equal(prof.SSH.Rules, want) {
+		t.Errorf("SSH.Rules = %+v, want %+v", prof.SSH.Rules, want)
+	}
+}
+
+func TestApplyCLIOverridesSSHRuleInvalid(t *testing.T) {
+	prof := config.Profile{}
+	if err := applyCLIOverrides(&prof, &opts{SSHRule: []string{"bad"}}); err == nil {
+		t.Fatal("expected invalid --ssh-rule to fail")
 	}
 }

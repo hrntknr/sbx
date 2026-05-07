@@ -4,7 +4,7 @@ Run a command inside a configurable sandbox.
 
 - **macOS**: backed by `sandbox-exec` (seatbelt)
 - **Linux**: backed by `bwrap` (bubblewrap)
-- **Optional**: an in-process Kubernetes API proxy that exposes a filtered kubeconfig to the sandboxed command
+- **Optional**: in-process Kubernetes and SSH proxies that keep host credentials outside the sandbox
 
 ## Install
 
@@ -42,6 +42,8 @@ The system tmp paths (`/tmp` / `/private/tmp` and `$TMPDIR`) are always allowed 
 | `--k8s-config PATH`  | Override kubeconfig path                         |
 | `--k8s-context CTX`  | Override contexts (comma-separated, repeatable)  |
 | `--k8s-mode rw\|ro`  | `ro` rejects POST/PUT/PATCH/DELETE at the proxy  |
+| `--ssh` / `--no-ssh` | Enable/disable the ssh proxy (overrides profile) |
+| `--ssh-rule RULE`    | Override ssh rules (comma-separated, repeatable) |
 
 ## Config
 
@@ -91,4 +93,18 @@ k8s:
   config: ~/.kube/config       # source kubeconfig (default: $KUBECONFIG / ~/.kube/config)
   context: ["prod-*", "stg"]   # context names or globs; empty = all contexts
   mode: ro                     # If set to `ro`, it will be limited to read-only APIs such as `kubectl get`.
+```
+
+### ssh
+
+When `ssh` is set on a profile (either `ssh: true` or a mapping), sbx starts a local SSH MITM proxy and injects a dummy `ssh` command at the front of `PATH`. The dummy command always runs OpenSSH with an sbx-managed ssh config that connects to the local proxy and passes the original target through `SetEnv`. The sandbox does not need access to private keys, ssh-agent sockets, or the outer ssh config.
+
+The proxy resolves the real destination with the outer OpenSSH config, checks the resolved host against the host rules, then runs the outer `ssh` with `BatchMode=yes`. If a passphrase/password prompt would be required, the connection fails; unlock keys with `ssh-add` before running sbx.
+
+```yaml
+ssh:
+  rules:
+    - allow(github.com)        # resolved HostName patterns; empty = all hosts
+    - allow(*.example.com)
+    - deny(*)
 ```

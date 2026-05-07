@@ -6,4 +6,6 @@ import (
 	"github.com/hrntknr/sbx/internal/cli"
 )
 
-func main() { os.Exit(cli.Run(os.Args[1:])) }
+func main() {
+	os.Exit(cli.Run(os.Args[1:]))
+}

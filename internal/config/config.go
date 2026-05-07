@@ -25,6 +25,7 @@ type Profile struct {
 	Rules []Rule
 	Env   map[string]string
 	K8s   *K8sProfile
+	SSH   *SSHProfile
 }
 
 // K8sProfile enables a kubectl proxy alongside the sandbox. Presence of the
@@ -43,6 +44,58 @@ type K8sProfile struct {
 	Config   string
 	Contexts []string
 	Mode     string
+}
+
+// SSHRule controls which resolved SSH destination hosts are exposed through
+// the SSH proxy. Pattern uses path.Match syntax: `*`, `?`, `[...]`.
+type SSHRule struct {
+	Action  string
+	Pattern string
+}
+
+// SSHProfile enables an SSH MITM proxy alongside the sandbox. Presence of the
+// profile means enabled; nil means disabled. Empty Rules means expose every
+// destination host, matching k8s' empty context list behavior.
+type SSHProfile struct {
+	Rules []SSHRule
+}
+
+// UnmarshalYAML accepts:
+//
+//	ssh: true              -> empty profile (defaults)
+//	ssh: { ... }           -> mapping with rules
+//
+// `ssh: false` is rejected; omit the field to disable.
+func (s *SSHProfile) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var v bool
+		if err := node.Decode(&v); err != nil {
+			return fmt.Errorf("ssh: must be `true` or a mapping (got %q)", node.Value)
+		}
+		if !v {
+			return fmt.Errorf("ssh: false is not supported; omit the field to disable")
+		}
+		return nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("ssh: must be `true` or a mapping")
+	}
+	var raw struct {
+		Rules scalarOrSlice `yaml:"rules"`
+	}
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	rules := make([]SSHRule, len(raw.Rules))
+	for i, l := range raw.Rules {
+		r, err := ParseSSHRule(l)
+		if err != nil {
+			return fmt.Errorf("ssh.rules line %d: %w", i+1, err)
+		}
+		rules[i] = r
+	}
+	s.Rules = rules
+	return nil
 }
 
 // UnmarshalYAML accepts:
@@ -97,6 +150,7 @@ type rawProfile struct {
 	Rules []string          `yaml:"rules"`
 	Env   map[string]string `yaml:"env"`
 	K8s   *K8sProfile       `yaml:"k8s"`
+	SSH   *SSHProfile       `yaml:"ssh"`
 }
 
 // LoadProfile is a convenience wrapper that returns only the parsed rules of
@@ -142,7 +196,7 @@ func LoadSelectedProfile(path, profile string) (Profile, error) {
 		}
 		rules[i] = r
 	}
-	return Profile{Name: profile, Rules: rules, Env: raw.Env, K8s: raw.K8s}, nil
+	return Profile{Name: profile, Rules: rules, Env: raw.Env, K8s: raw.K8s, SSH: raw.SSH}, nil
 }
 
 // defaultProfile is used when no config file is present.
@@ -200,7 +254,7 @@ func selectProfile(data []byte, profile string) (rawProfile, error) {
 		if err != nil {
 			return rawProfile{}, err
 		}
-		if p.Name == "" && len(p.Rules) == 0 && len(p.Env) == 0 && p.K8s == nil {
+		if p.Name == "" && len(p.Rules) == 0 && len(p.Env) == 0 && p.K8s == nil && p.SSH == nil {
 			continue
 		}
 		name := p.Name
@@ -212,6 +266,24 @@ func selectProfile(data []byte, profile string) (rawProfile, error) {
 		}
 	}
 	return rawProfile{}, fmt.Errorf("profile %q not found", profile)
+}
+
+// ParseSSHRule parses "ACTION(PATTERN)" e.g. "allow(github.com)".
+func ParseSSHRule(s string) (SSHRule, error) {
+	s = strings.TrimSpace(s)
+	open := strings.IndexByte(s, '(')
+	if open <= 0 || !strings.HasSuffix(s, ")") {
+		return SSHRule{}, fmt.Errorf("invalid ssh rule %q (expected ACTION(PATTERN))", s)
+	}
+	action := strings.ToLower(strings.TrimSpace(s[:open]))
+	if action != "allow" && action != "deny" {
+		return SSHRule{}, fmt.Errorf("invalid action %q (must be allow or deny)", action)
+	}
+	pattern := strings.TrimSpace(s[open+1 : len(s)-1])
+	if pattern == "" {
+		return SSHRule{}, fmt.Errorf("invalid ssh rule %q (empty pattern)", s)
+	}
+	return SSHRule{Action: action, Pattern: pattern}, nil
 }
 
 func defaultPath() string {
