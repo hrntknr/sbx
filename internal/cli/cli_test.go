@@ -38,8 +38,8 @@ func TestSplitSbxPrefixedAfterCommand(t *testing.T) {
 }
 
 func TestNormalizeArgsSpaceValue(t *testing.T) {
-	in := []string{"mycmd", "--sbx-k8s-config", "/tmp/kc", "--bar"}
-	want := []string{"--k8s-config", "/tmp/kc", "mycmd", "--bar"}
+	in := []string{"mycmd", "--sbx-profile", "dev", "--bar"}
+	want := []string{"--profile", "dev", "mycmd", "--bar"}
 	got := normalizeArgs(in, newParser(t))
 	if !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -47,8 +47,8 @@ func TestNormalizeArgsSpaceValue(t *testing.T) {
 }
 
 func TestNormalizeArgsEqualsValue(t *testing.T) {
-	in := []string{"mycmd", "--sbx-k8s-config=/tmp/kc", "--bar"}
-	want := []string{"--k8s-config=/tmp/kc", "mycmd", "--bar"}
+	in := []string{"mycmd", "--sbx-profile=dev", "--bar"}
+	want := []string{"--profile=dev", "mycmd", "--bar"}
 	got := normalizeArgs(in, newParser(t))
 	if !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -65,8 +65,8 @@ func TestNormalizeArgsNegated(t *testing.T) {
 }
 
 func TestNormalizeArgsSliceRepeated(t *testing.T) {
-	in := []string{"mycmd", "--sbx-k8s-context", "a,b", "--sbx-k8s-context=c"}
-	want := []string{"--k8s-context", "a,b", "--k8s-context=c", "mycmd"}
+	in := []string{"mycmd", "--sbx-profile", "prod", "--sbx-k8s"}
+	want := []string{"--profile", "prod", "--k8s", "mycmd"}
 	got := normalizeArgs(in, newParser(t))
 	if !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -91,16 +91,16 @@ func TestNormalizeArgsBareDashSbxIgnored(t *testing.T) {
 }
 
 func TestApplyCLIOverridesNoChange(t *testing.T) {
-	prof := config.Profile{K8s: &config.K8sProfile{Mode: "rw"}}
+	prof := config.Profile{K8s: &config.K8sProfile{Rules: []config.K8sRule{{Action: "allow", Mode: "rw", Pattern: "profile"}}}}
 	applyCLIOverrides(&prof, &opts{})
-	if prof.K8s == nil || prof.K8s.Mode != "rw" {
+	if prof.K8s == nil || len(prof.K8s.Rules) != 1 || prof.K8s.Rules[0].Pattern != "profile" {
 		t.Fatalf("profile mutated: %+v", prof)
 	}
 }
 
 func TestApplyCLIOverridesNoK8sDisables(t *testing.T) {
 	f := false
-	prof := config.Profile{K8s: &config.K8sProfile{Mode: "rw"}}
+	prof := config.Profile{K8s: &config.K8sProfile{Rules: []config.K8sRule{{Action: "allow", Mode: "rw", Pattern: "profile"}}}}
 	applyCLIOverrides(&prof, &opts{K8s: &f})
 	if prof.K8s != nil {
 		t.Fatalf("--no-k8s should clear K8s, got %+v", prof.K8s)
@@ -116,47 +116,31 @@ func TestApplyCLIOverridesK8sEnables(t *testing.T) {
 	}
 }
 
-func TestApplyCLIOverridesOverrideImpliesEnable(t *testing.T) {
-	mode := "ro"
-	prof := config.Profile{}
-	applyCLIOverrides(&prof, &opts{K8sMode: &mode})
-	if prof.K8s == nil || prof.K8s.Mode != "ro" {
-		t.Fatalf("--k8s-mode should enable and set mode, got %+v", prof.K8s)
-	}
-}
-
-func TestApplyCLIOverridesFieldsWin(t *testing.T) {
-	prof := config.Profile{K8s: &config.K8sProfile{
-		Config:   "/profile.yaml",
-		Contexts: []string{"prof"},
-		Mode:     "rw",
-	}}
-	cfg := "/cli.yaml"
-	mode := "ro"
-	applyCLIOverrides(&prof, &opts{
-		K8sConfig:  &cfg,
-		K8sContext: []string{"cli"},
-		K8sMode:    &mode,
-	})
-	if prof.K8s.Config != cfg || prof.K8s.Mode != mode {
-		t.Errorf("CLI fields didn't win: %+v", prof.K8s)
-	}
-	if !slices.Equal(prof.K8s.Contexts, []string{"cli"}) {
-		t.Errorf("contexts = %v, want [cli]", prof.K8s.Contexts)
-	}
-}
-
 func TestApplyCLIOverridesUnsetKeepsProfile(t *testing.T) {
 	prof := config.Profile{K8s: &config.K8sProfile{
-		Config:   "/profile.yaml",
-		Contexts: []string{"prof"},
-		Mode:     "rw",
+		Rules: []config.K8sRule{{Action: "allow", Mode: "rw", Pattern: "prof"}},
 	}}
 	applyCLIOverrides(&prof, &opts{})
-	if prof.K8s.Config != "/profile.yaml" || prof.K8s.Mode != "rw" {
-		t.Errorf("unset CLI fields shouldn't change profile: %+v", prof.K8s)
+	want := []config.K8sRule{{Action: "allow", Mode: "rw", Pattern: "prof"}}
+	if !slices.Equal(prof.K8s.Rules, want) {
+		t.Errorf("rules = %v, want %v", prof.K8s.Rules, want)
 	}
-	if !slices.Equal(prof.K8s.Contexts, []string{"prof"}) {
-		t.Errorf("contexts = %v, want [prof]", prof.K8s.Contexts)
+}
+
+func TestApplyCLIOverridesNoSSHDisables(t *testing.T) {
+	f := false
+	prof := config.Profile{SSH: &config.SSHProfile{Rules: []config.SSHRule{{Action: "allow", Pattern: "profile"}}}}
+	applyCLIOverrides(&prof, &opts{SSH: &f})
+	if prof.SSH != nil {
+		t.Fatalf("--no-ssh should clear SSH, got %+v", prof.SSH)
+	}
+}
+
+func TestApplyCLIOverridesSSHEnables(t *testing.T) {
+	tr := true
+	prof := config.Profile{}
+	applyCLIOverrides(&prof, &opts{SSH: &tr})
+	if prof.SSH == nil {
+		t.Fatal("--ssh should enable SSH on profile without it")
 	}
 }

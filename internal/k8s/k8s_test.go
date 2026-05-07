@@ -46,6 +46,37 @@ func TestExpandContexts(t *testing.T) {
 	}
 }
 
+func TestResolveRules(t *testing.T) {
+	available := []string{"dev", "prod-1", "prod-2", "stage"}
+	rules := []Rule{
+		{Action: "allow", Mode: ModeReadOnly, Pattern: "prod-*"},
+		{Action: "allow", Mode: ModeReadWrite, Pattern: "dev"},
+		{Action: "deny", Mode: ModeReadWrite, Pattern: "*"},
+	}
+	got, err := resolveRules(rules, available, "dev")
+	if err != nil {
+		t.Fatalf("resolveRules: %v", err)
+	}
+	want := []resolvedContext{{"dev", ModeReadWrite}, {"prod-1", ModeReadOnly}, {"prod-2", ModeReadOnly}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("resolveRules = %+v, want %+v", got, want)
+	}
+}
+
+func TestResolveRulesErrorsWhenAllowMatchesNothing(t *testing.T) {
+	_, err := resolveRules([]Rule{{Action: "allow", Mode: ModeReadOnly, Pattern: "missing-*"}}, []string{"dev"}, "")
+	if err == nil {
+		t.Fatal("expected missing allow pattern to fail")
+	}
+}
+
+func TestResolveRulesErrorsWhenNothingAllowed(t *testing.T) {
+	_, err := resolveRules([]Rule{{Action: "deny", Mode: ModeReadWrite, Pattern: "*"}}, []string{"dev"}, "")
+	if err == nil {
+		t.Fatal("expected all-deny rules to fail")
+	}
+}
+
 func TestBuildKubeconfig(t *testing.T) {
 	got := buildKubeconfig("127.0.0.1:12345", []proxyEntry{{name: "sbx"}})
 	for _, want := range []string{
@@ -109,7 +140,8 @@ func TestRouterRoutesEscapedContextName(t *testing.T) {
 func TestStartEmptyKubeconfigSkips(t *testing.T) {
 	path := writeEmptyKubeconfig(t)
 
-	proxy, err := Start(path, nil, ModeReadWrite)
+	t.Setenv("KUBECONFIG", path)
+	proxy, err := Start(nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -122,7 +154,8 @@ func TestStartEmptyKubeconfigSkips(t *testing.T) {
 func TestStartEmptyKubeconfigButContextRequestedErrors(t *testing.T) {
 	path := writeEmptyKubeconfig(t)
 
-	if _, err := Start(path, []string{"missing"}, ModeReadWrite); err == nil {
+	t.Setenv("KUBECONFIG", path)
+	if _, err := Start([]Rule{{Action: "allow", Mode: ModeReadWrite, Pattern: "missing"}}); err == nil {
 		t.Fatal("expected error when contexts are requested but kubeconfig is empty")
 	}
 }
@@ -145,9 +178,9 @@ func TestParseMode(t *testing.T) {
 		{"", ModeReadWrite, false},
 		{"rw", ModeReadWrite, false},
 		{"RW", ModeReadWrite, false},
-		{"ro", ModeReadOnly, false},
-		{"RO", ModeReadOnly, false},
-		{"r", 0, true},
+		{"r", ModeReadOnly, false},
+		{"R", ModeReadOnly, false},
+		{"ro", 0, true},
 		{"readonly", 0, true},
 	}
 	for _, c := range cases {

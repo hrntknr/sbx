@@ -25,30 +25,84 @@ type Profile struct {
 	Rules []Rule
 	Env   map[string]string
 	K8s   *K8sProfile
+	SSH   *SSHProfile
 }
 
 // K8sProfile enables a kubectl proxy alongside the sandbox. Presence of the
-// profile means enabled; nil means disabled. Namespace is inherited from
-// each source context and is not configurable.
-//
-// Contexts may be literal context names or globs (path.Match syntax: `*`,
-// `?`, `[...]`). Each resolved context gets its own entry in the generated
-// kubeconfig, served through a single localhost proxy. Empty list means
-// "expose every context in the source kubeconfig", current-context first.
-//
-// Mode controls request filtering at the proxy:
-//   - "rw" (default): no filtering, the sandbox can mutate cluster state.
-//   - "ro":           POST/PUT/PATCH/DELETE are rejected at the proxy.
+// profile means enabled; nil means disabled. Namespace is inherited from each
+// source context and is not configurable. Empty Rules means expose every
+// context read/write, current-context first.
 type K8sProfile struct {
-	Config   string
-	Contexts []string
-	Mode     string
+	Rules []K8sRule
+}
+
+// K8sRule controls which source kubeconfig contexts are exposed through the
+// proxy. Pattern uses path.Match syntax: `*`, `?`, `[...]`. Mode is "rw" or
+// "r" and is applied to allowed contexts; deny rules ignore Mode.
+type K8sRule struct {
+	Action  string
+	Mode    string
+	Pattern string
+}
+
+// SSHRule controls which resolved SSH destination hosts are exposed through
+// the SSH proxy. Pattern uses path.Match syntax: `*`, `?`, `[...]`.
+type SSHRule struct {
+	Action  string
+	Pattern string
+}
+
+// SSHProfile enables an SSH MITM proxy alongside the sandbox. Presence of the
+// profile means enabled; nil means disabled. Empty Rules means expose every
+// destination host, matching k8s' empty context list behavior.
+type SSHProfile struct {
+	Rules []SSHRule
+}
+
+// UnmarshalYAML accepts:
+//
+//	ssh: true              -> empty profile (defaults)
+//	ssh: [ ... ]           -> rule list
+//
+// `ssh: false` is rejected; omit the field to disable.
+func (s *SSHProfile) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var v bool
+		if err := node.Decode(&v); err != nil {
+			return fmt.Errorf("ssh: must be `true` or a mapping (got %q)", node.Value)
+		}
+		if !v {
+			return fmt.Errorf("ssh: false is not supported; omit the field to disable")
+		}
+		return nil
+	}
+	if node.Kind == yaml.SequenceNode {
+		return s.decodeRules(node)
+	}
+	return fmt.Errorf("ssh: must be `true` or a rule list")
+}
+
+func (s *SSHProfile) decodeRules(node *yaml.Node) error {
+	var raw scalarOrSlice
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	rules := make([]SSHRule, len(raw))
+	for i, l := range raw {
+		r, err := ParseSSHRule(l)
+		if err != nil {
+			return fmt.Errorf("ssh.rules line %d: %w", i+1, err)
+		}
+		rules[i] = r
+	}
+	s.Rules = rules
+	return nil
 }
 
 // UnmarshalYAML accepts:
 //
 //	k8s: true              -> empty profile (defaults)
-//	k8s: { ... }           -> mapping with config/context/mode
+//	k8s: [ ... ]           -> rule list
 //
 // `k8s: false` is rejected; omit the field to disable.
 func (k *K8sProfile) UnmarshalYAML(node *yaml.Node) error {
@@ -62,18 +116,26 @@ func (k *K8sProfile) UnmarshalYAML(node *yaml.Node) error {
 		}
 		return nil
 	}
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("k8s: must be `true` or a mapping")
+	if node.Kind == yaml.SequenceNode {
+		return k.decodeRules(node)
 	}
-	var raw struct {
-		Config  string        `yaml:"config"`
-		Context scalarOrSlice `yaml:"context"`
-		Mode    string        `yaml:"mode"`
-	}
+	return fmt.Errorf("k8s: must be `true` or a rule list")
+}
+
+func (k *K8sProfile) decodeRules(node *yaml.Node) error {
+	var raw scalarOrSlice
 	if err := node.Decode(&raw); err != nil {
 		return err
 	}
-	k.Config, k.Contexts, k.Mode = raw.Config, raw.Context, raw.Mode
+	rules := make([]K8sRule, len(raw))
+	for i, l := range raw {
+		r, err := ParseK8sRule(l)
+		if err != nil {
+			return fmt.Errorf("k8s.rules line %d: %w", i+1, err)
+		}
+		rules[i] = r
+	}
+	k.Rules = rules
 	return nil
 }
 
@@ -97,6 +159,7 @@ type rawProfile struct {
 	Rules []string          `yaml:"rules"`
 	Env   map[string]string `yaml:"env"`
 	K8s   *K8sProfile       `yaml:"k8s"`
+	SSH   *SSHProfile       `yaml:"ssh"`
 }
 
 // LoadProfile is a convenience wrapper that returns only the parsed rules of
@@ -142,7 +205,7 @@ func LoadSelectedProfile(path, profile string) (Profile, error) {
 		}
 		rules[i] = r
 	}
-	return Profile{Name: profile, Rules: rules, Env: raw.Env, K8s: raw.K8s}, nil
+	return Profile{Name: profile, Rules: rules, Env: raw.Env, K8s: raw.K8s, SSH: raw.SSH}, nil
 }
 
 // defaultProfile is used when no config file is present.
@@ -200,7 +263,7 @@ func selectProfile(data []byte, profile string) (rawProfile, error) {
 		if err != nil {
 			return rawProfile{}, err
 		}
-		if p.Name == "" && len(p.Rules) == 0 && len(p.Env) == 0 && p.K8s == nil {
+		if p.Name == "" && len(p.Rules) == 0 && len(p.Env) == 0 && p.K8s == nil && p.SSH == nil {
 			continue
 		}
 		name := p.Name
@@ -212,6 +275,51 @@ func selectProfile(data []byte, profile string) (rawProfile, error) {
 		}
 	}
 	return rawProfile{}, fmt.Errorf("profile %q not found", profile)
+}
+
+// ParseK8sRule parses "ACTION(MODE, PATTERN)" e.g. "allow(r, prod-*)".
+func ParseK8sRule(s string) (K8sRule, error) {
+	s = strings.TrimSpace(s)
+	open := strings.IndexByte(s, '(')
+	if open <= 0 || !strings.HasSuffix(s, ")") {
+		return K8sRule{}, fmt.Errorf("invalid k8s rule %q (expected ACTION(MODE, PATTERN))", s)
+	}
+	action := strings.ToLower(strings.TrimSpace(s[:open]))
+	if action != "allow" && action != "deny" {
+		return K8sRule{}, fmt.Errorf("invalid action %q (must be allow or deny)", action)
+	}
+	inner := s[open+1 : len(s)-1]
+	comma := strings.Index(inner, ",")
+	if comma < 0 {
+		return K8sRule{}, fmt.Errorf("invalid k8s rule %q (missing comma)", s)
+	}
+	mode := strings.ToLower(strings.TrimSpace(inner[:comma]))
+	if mode != "rw" && mode != "r" {
+		return K8sRule{}, fmt.Errorf("invalid k8s mode %q (must be rw or r)", mode)
+	}
+	pattern := strings.TrimSpace(inner[comma+1:])
+	if pattern == "" {
+		return K8sRule{}, fmt.Errorf("invalid k8s rule %q (empty pattern)", s)
+	}
+	return K8sRule{Action: action, Mode: mode, Pattern: pattern}, nil
+}
+
+// ParseSSHRule parses "ACTION(PATTERN)" e.g. "allow(github.com)".
+func ParseSSHRule(s string) (SSHRule, error) {
+	s = strings.TrimSpace(s)
+	open := strings.IndexByte(s, '(')
+	if open <= 0 || !strings.HasSuffix(s, ")") {
+		return SSHRule{}, fmt.Errorf("invalid ssh rule %q (expected ACTION(PATTERN))", s)
+	}
+	action := strings.ToLower(strings.TrimSpace(s[:open]))
+	if action != "allow" && action != "deny" {
+		return SSHRule{}, fmt.Errorf("invalid action %q (must be allow or deny)", action)
+	}
+	pattern := strings.TrimSpace(s[open+1 : len(s)-1])
+	if pattern == "" {
+		return SSHRule{}, fmt.Errorf("invalid ssh rule %q (empty pattern)", s)
+	}
+	return SSHRule{Action: action, Pattern: pattern}, nil
 }
 
 func defaultPath() string {

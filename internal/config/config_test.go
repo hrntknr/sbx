@@ -58,6 +58,64 @@ func TestParseMode(t *testing.T) {
 	}
 }
 
+func TestParseK8sRule(t *testing.T) {
+	cases := []struct {
+		in   string
+		want K8sRule
+	}{
+		{"allow(rw, dev)", K8sRule{"allow", "rw", "dev"}},
+		{"allow(r, prod-*)", K8sRule{"allow", "r", "prod-*"}},
+		{"deny(rw, *)", K8sRule{"deny", "rw", "*"}},
+	}
+	for _, c := range cases {
+		got, err := ParseK8sRule(c.in)
+		if err != nil {
+			t.Errorf("ParseK8sRule(%q): %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("ParseK8sRule(%q) = %+v, want %+v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestParseK8sRuleErrors(t *testing.T) {
+	for _, in := range []string{"allow(dev)", "allow(ro, dev)", "reject(rw, *)", "allow(r,)"} {
+		if _, err := ParseK8sRule(in); err == nil {
+			t.Errorf("ParseK8sRule(%q): expected error", in)
+		}
+	}
+}
+
+func TestParseSSHRule(t *testing.T) {
+	cases := []struct {
+		in   string
+		want SSHRule
+	}{
+		{"allow(github.com)", SSHRule{"allow", "github.com"}},
+		{"deny(*.internal)", SSHRule{"deny", "*.internal"}},
+		{"  allow ( prod-[12] ) ", SSHRule{"allow", "prod-[12]"}},
+	}
+	for _, c := range cases {
+		got, err := ParseSSHRule(c.in)
+		if err != nil {
+			t.Errorf("ParseSSHRule(%q): %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("ParseSSHRule(%q) = %+v, want %+v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestParseSSHRuleErrors(t *testing.T) {
+	for _, in := range []string{"allow github.com", "allow()", "reject(*)"} {
+		if _, err := ParseSSHRule(in); err == nil {
+			t.Errorf("ParseSSHRule(%q): expected error", in)
+		}
+	}
+}
+
 func writeConfig(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "sbx.yaml")
@@ -154,7 +212,7 @@ rules:
 	if p.K8s == nil {
 		t.Fatalf("K8s should be enabled")
 	}
-	if len(p.K8s.Contexts) != 0 || p.K8s.Config != "" || p.K8s.Mode != "" {
+	if len(p.K8s.Rules) != 0 {
 		t.Fatalf("K8s defaults wrong: %+v", p.K8s)
 	}
 }
@@ -171,12 +229,12 @@ rules:
 	}
 }
 
-func TestLoadProfileK8sMapping(t *testing.T) {
+func TestLoadProfileK8sRules(t *testing.T) {
 	path := writeConfig(t, `
 name: k8s
 k8s:
-  config: ~/.kube/alt
-  context: my-ctx
+  - allow(r, my-ctx)
+  - deny(rw, *)
 rules:
   - allow(rw, ${WORK_DIR})
 `)
@@ -187,48 +245,14 @@ rules:
 	if p.K8s == nil {
 		t.Fatalf("K8s should be enabled")
 	}
-	if p.K8s.Config != "~/.kube/alt" {
-		t.Fatalf("K8s.Config = %q", p.K8s.Config)
+	want := []K8sRule{{"allow", "r", "my-ctx"}, {"deny", "rw", "*"}}
+	if len(p.K8s.Rules) != len(want) {
+		t.Fatalf("K8s.Rules = %+v", p.K8s.Rules)
 	}
-	if len(p.K8s.Contexts) != 1 || p.K8s.Contexts[0] != "my-ctx" {
-		t.Fatalf("K8s.Contexts = %v", p.K8s.Contexts)
-	}
-}
-
-func TestLoadProfileK8sMultipleContexts(t *testing.T) {
-	path := writeConfig(t, `
-name: k8s
-k8s:
-  context: [dev, prod]
-rules:
-  - allow(rw, ${WORK_DIR})
-`)
-	p, err := LoadSelectedProfile(path, "k8s")
-	if err != nil {
-		t.Fatalf("LoadSelectedProfile: %v", err)
-	}
-	if p.K8s == nil {
-		t.Fatalf("K8s should be enabled")
-	}
-	if len(p.K8s.Contexts) != 2 || p.K8s.Contexts[0] != "dev" || p.K8s.Contexts[1] != "prod" {
-		t.Fatalf("K8s.Contexts = %v", p.K8s.Contexts)
-	}
-}
-
-func TestLoadProfileK8sMode(t *testing.T) {
-	path := writeConfig(t, `
-name: k8s
-k8s:
-  mode: ro
-rules:
-  - allow(rw, ${WORK_DIR})
-`)
-	p, err := LoadSelectedProfile(path, "k8s")
-	if err != nil {
-		t.Fatalf("LoadSelectedProfile: %v", err)
-	}
-	if p.K8s == nil || p.K8s.Mode != "ro" {
-		t.Fatalf("K8s.Mode = %q, want ro", p.K8s.Mode)
+	for i := range want {
+		if p.K8s.Rules[i] != want[i] {
+			t.Fatalf("K8s.Rules[%d] = %+v, want %+v", i, p.K8s.Rules[i], want[i])
+		}
 	}
 }
 
@@ -244,6 +268,64 @@ rules:
 	}
 	if p.K8s != nil {
 		t.Fatalf("K8s should be nil: %+v", p.K8s)
+	}
+}
+
+func TestLoadProfileSSHBool(t *testing.T) {
+	path := writeConfig(t, `
+name: ssh
+ssh: true
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	p, err := LoadSelectedProfile(path, "ssh")
+	if err != nil {
+		t.Fatalf("LoadSelectedProfile: %v", err)
+	}
+	if p.SSH == nil {
+		t.Fatalf("SSH should be enabled")
+	}
+	if len(p.SSH.Rules) != 0 {
+		t.Fatalf("SSH defaults wrong: %+v", p.SSH)
+	}
+}
+
+func TestLoadProfileSSHFalseRejected(t *testing.T) {
+	path := writeConfig(t, `
+name: ssh
+ssh: false
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	if _, err := LoadSelectedProfile(path, "ssh"); err == nil {
+		t.Fatal("expected error for ssh: false")
+	}
+}
+
+func TestLoadProfileSSHRules(t *testing.T) {
+	path := writeConfig(t, `
+name: ssh
+ssh:
+  - allow(github.com)
+  - deny(*.internal)
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	p, err := LoadSelectedProfile(path, "ssh")
+	if err != nil {
+		t.Fatalf("LoadSelectedProfile: %v", err)
+	}
+	if p.SSH == nil {
+		t.Fatalf("SSH should be enabled")
+	}
+	want := []SSHRule{{"allow", "github.com"}, {"deny", "*.internal"}}
+	if len(p.SSH.Rules) != len(want) {
+		t.Fatalf("SSH.Rules = %+v", p.SSH.Rules)
+	}
+	for i := range want {
+		if p.SSH.Rules[i] != want[i] {
+			t.Fatalf("SSH.Rules[%d] = %+v, want %+v", i, p.SSH.Rules[i], want[i])
+		}
 	}
 }
 

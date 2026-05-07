@@ -36,6 +36,19 @@ type proxyEntry struct {
 	namespace string
 }
 
+// Rule controls which source kubeconfig contexts are exposed. Pattern uses
+// path.Match syntax. Mode is applied only to allowed contexts.
+type Rule struct {
+	Action  string
+	Mode    Mode
+	Pattern string
+}
+
+type resolvedContext struct {
+	name string
+	mode Mode
+}
+
 // Mode controls request filtering applied at the embedded server.
 type Mode int
 
@@ -44,31 +57,30 @@ const (
 	ModeReadOnly
 )
 
-// ParseMode parses "rw" / "ro" (case-insensitive). Empty is ReadWrite.
+// ParseMode parses "rw" / "r" (case-insensitive). Empty is ReadWrite.
 func ParseMode(s string) (Mode, error) {
 	switch strings.ToLower(s) {
 	case "", "rw":
 		return ModeReadWrite, nil
-	case "ro":
+	case "r":
 		return ModeReadOnly, nil
 	}
-	return 0, fmt.Errorf("invalid k8s mode %q (must be rw or ro)", s)
+	return 0, fmt.Errorf("invalid k8s mode %q (must be rw or r)", s)
 }
 
 // Start binds a single localhost port and serves a path-prefix-routed proxy
-// for the requested contexts. Each entry may be a literal context name or a
-// glob (path.Match syntax: `*`, `?`, `[...]`). An empty contexts list expands
-// to every context in the source kubeconfig, with kubectl's current-context
-// first. If no kubeconfig is found and no contexts were explicitly requested,
-// Start returns (nil, nil) so callers can skip the proxy entirely.
-func Start(kubeconfig string, contexts []string, mode Mode) (*Proxy, error) {
-	rules := loadingRules(kubeconfig)
-	raw, err := rules.Load()
+// for the contexts allowed by rules. Rules are first-match-wins; an empty rule
+// list exposes every context read/write, with kubectl's current-context first.
+// If no kubeconfig is found and no rules were explicitly requested, Start
+// returns (nil, nil) so callers can skip the proxy entirely.
+func Start(rules []Rule) (*Proxy, error) {
+	loading := clientcmd.NewDefaultClientConfigLoadingRules()
+	raw, err := loading.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load kubeconfig: %w", err)
 	}
 	if len(raw.Contexts) == 0 {
-		if len(contexts) == 0 {
+		if len(rules) == 0 {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("no contexts found in kubeconfig")
@@ -80,14 +92,18 @@ func Start(kubeconfig string, contexts []string, mode Mode) (*Proxy, error) {
 	}
 	sort.Strings(available)
 
-	var resolved []string
-	if len(contexts) == 0 {
-		resolved = available
+	var resolved []resolvedContext
+	if len(rules) == 0 {
+		resolved = make([]resolvedContext, 0, len(available))
+		ordered := available
 		if cur := raw.CurrentContext; cur != "" {
-			resolved = moveToFront(resolved, cur)
+			ordered = moveToFront(ordered, cur)
+		}
+		for _, name := range ordered {
+			resolved = append(resolved, resolvedContext{name: name, mode: ModeReadWrite})
 		}
 	} else {
-		resolved, err = expandContexts(contexts, available)
+		resolved, err = resolveRules(rules, available, raw.CurrentContext)
 		if err != nil {
 			return nil, err
 		}
@@ -95,21 +111,21 @@ func Start(kubeconfig string, contexts []string, mode Mode) (*Proxy, error) {
 
 	handlers := map[string]http.Handler{}
 	var entries []proxyEntry
-	for _, name := range resolved {
-		ctx := raw.Contexts[name]
-		cfg, err := clientcmd.NewNonInteractiveClientConfig(*raw, name, &clientcmd.ConfigOverrides{}, rules).ClientConfig()
+	for _, r := range resolved {
+		ctx := raw.Contexts[r.name]
+		cfg, err := clientcmd.NewNonInteractiveClientConfig(*raw, r.name, &clientcmd.ConfigOverrides{}, loading).ClientConfig()
 		if err != nil {
-			return nil, fmt.Errorf("context %q: %w", name, err)
+			return nil, fmt.Errorf("context %q: %w", r.name, err)
 		}
 		h, err := contextHandler(cfg)
 		if err != nil {
-			return nil, fmt.Errorf("context %q: %w", name, err)
+			return nil, fmt.Errorf("context %q: %w", r.name, err)
 		}
-		if mode == ModeReadOnly {
+		if r.mode == ModeReadOnly {
 			h = readOnlyMiddleware(h)
 		}
-		handlers[name] = h
-		entries = append(entries, proxyEntry{name: name, namespace: ctx.Namespace})
+		handlers[r.name] = h
+		entries = append(entries, proxyEntry{name: r.name, namespace: ctx.Namespace})
 	}
 	router := &router{handlers: handlers}
 
@@ -179,6 +195,40 @@ func expandContexts(patterns, available []string) ([]string, error) {
 	return out, nil
 }
 
+func resolveRules(rules []Rule, available []string, current string) ([]resolvedContext, error) {
+	ordered := available
+	if current != "" {
+		ordered = moveToFront(ordered, current)
+	}
+	matchedRules := make([]bool, len(rules))
+	var out []resolvedContext
+	for _, name := range ordered {
+		for i, rule := range rules {
+			ok, err := path.Match(rule.Pattern, name)
+			if err != nil {
+				return nil, fmt.Errorf("invalid context pattern %q: %w", rule.Pattern, err)
+			}
+			if !ok {
+				continue
+			}
+			matchedRules[i] = true
+			if rule.Action == "allow" {
+				out = append(out, resolvedContext{name: name, mode: rule.Mode})
+			}
+			break
+		}
+	}
+	for i, rule := range rules {
+		if rule.Action == "allow" && !matchedRules[i] {
+			return nil, fmt.Errorf("no contexts matched pattern %q", rule.Pattern)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no contexts allowed by k8s rules")
+	}
+	return out, nil
+}
+
 func isGlobPattern(s string) bool {
 	return strings.ContainsAny(s, "*?[")
 }
@@ -242,14 +292,6 @@ func upgradeTransport(cfg *rest.Config) (utilproxy.UpgradeRequestRoundTripper, e
 		return nil, err
 	}
 	return utilproxy.NewUpgradeRequestRoundTripper(rt, authed), nil
-}
-
-func loadingRules(kubeconfig string) *clientcmd.ClientConfigLoadingRules {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if kubeconfig != "" {
-		rules.ExplicitPath = kubeconfig
-	}
-	return rules
 }
 
 func buildKubeconfig(addr string, entries []proxyEntry) string {

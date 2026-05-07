@@ -1,0 +1,459 @@
+package sshproxy
+
+import (
+	"bufio"
+	"crypto/rand"
+	"crypto/rsa"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"os/user"
+	"path"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/hrntknr/sbx/internal/config"
+)
+
+const sentinelUser = "nobody"
+
+// Options controls the SSH proxy exposed to the sandbox.
+type Options struct {
+	Rules []config.SSHRule
+}
+
+// Proxy is an in-process SSH MITM server plus injected ssh command/config.
+type Proxy struct {
+	Dir    string
+	BinDir string
+
+	listener net.Listener
+	server   *ssh.ServerConfig
+	done     chan struct{}
+	wg       sync.WaitGroup
+	realSSH  string
+	rules    []config.SSHRule
+	sentinel string
+	port     string
+}
+
+type resolvedTarget struct {
+	HostName string
+	Port     string
+	User     string
+}
+
+// Start starts the proxy and writes the injected ssh command/config tree.
+func Start(opts Options) (*Proxy, error) {
+	realSSH, err := exec.LookPath("ssh")
+	if err != nil {
+		return nil, fmt.Errorf("find ssh: %w", err)
+	}
+	dir, err := os.MkdirTemp("", "sbx-ssh-")
+	if err != nil {
+		return nil, err
+	}
+	binDir := filepath.Join(dir, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		_ = listener.Close()
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	sentinel := sentinelUser
+	server, err := serverConfig()
+	if err != nil {
+		_ = listener.Close()
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	p := &Proxy{
+		Dir:      dir,
+		BinDir:   binDir,
+		listener: listener,
+		server:   server,
+		done:     make(chan struct{}),
+		realSSH:  realSSH,
+		rules:    opts.Rules,
+		sentinel: sentinel,
+		port:     port,
+	}
+	if err := p.writeInjectedFiles(); err != nil {
+		p.Stop()
+		return nil, err
+	}
+	p.wg.Add(1)
+	go p.serve()
+	return p, nil
+}
+
+func serverConfig() (*ssh.ServerConfig, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, err
+	}
+	signer, err := ssh.NewSignerFromKey(key)
+	if err != nil {
+		return nil, err
+	}
+	cfg := &ssh.ServerConfig{NoClientAuth: true}
+	cfg.AddHostKey(signer)
+	return cfg, nil
+}
+
+func (p *Proxy) writeInjectedFiles() error {
+	configPath := filepath.Join(p.Dir, "config")
+	sshConfig := fmt.Sprintf(`Host *
+  HostName 127.0.0.1
+  User %s
+  Port %s
+  SetEnv SBX_SSH_TARGET=%%n SBX_SSH_PORT=%%p
+  PreferredAuthentications none
+  PubkeyAuthentication no
+  PasswordAuthentication no
+  KbdInteractiveAuthentication no
+  StrictHostKeyChecking no
+  LogLevel ERROR
+  UserKnownHostsFile /dev/null
+  GlobalKnownHostsFile /dev/null
+`, p.sentinel, p.port)
+	if err := os.WriteFile(configPath, []byte(sshConfig), 0o600); err != nil {
+		return err
+	}
+	sshPath := filepath.Join(p.BinDir, "ssh")
+	sshScript := fmt.Sprintf(`#!/bin/sh
+exec %s -F %s "$@"
+`, shellQuote(p.realSSH), shellQuote(configPath))
+	return os.WriteFile(sshPath, []byte(sshScript), 0o700)
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func (p *Proxy) serve() {
+	defer p.wg.Done()
+	for {
+		conn, err := p.listener.Accept()
+		if err != nil {
+			select {
+			case <-p.done:
+				return
+			default:
+				continue
+			}
+		}
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.handleConn(conn)
+		}()
+	}
+}
+
+func (p *Proxy) handleConn(conn net.Conn) {
+	defer conn.Close()
+	serverConn, chans, reqs, err := ssh.NewServerConn(conn, p.server)
+	if err != nil {
+		return
+	}
+	defer serverConn.Close()
+	innerUser := serverConn.User()
+	explicitUser := innerUser != "" && innerUser != p.sentinel
+	go ssh.DiscardRequests(reqs)
+	for ch := range chans {
+		if ch.ChannelType() != "session" {
+			ch.Reject(ssh.UnknownChannelType, "unsupported channel type")
+			continue
+		}
+		channel, requests, err := ch.Accept()
+		if err != nil {
+			continue
+		}
+		go p.handleSession(channel, requests, innerUser, explicitUser)
+	}
+}
+
+func (p *Proxy) resolve(host, port, innerUser string, explicitUser, explicitPort bool) (resolvedTarget, error) {
+	args := []string{"-G"}
+	if explicitUser {
+		args = append(args, "-l", innerUser)
+	}
+	if explicitPort {
+		args = append(args, "-p", port)
+	}
+	args = append(args, host)
+	cmd := exec.Command(p.realSSH, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return resolvedTarget{}, err
+	}
+	values := parseSSHConfigOutput(string(out))
+	userName := values["user"]
+	if explicitUser {
+		userName = innerUser
+	}
+	if userName == "" {
+		if u, err := user.Current(); err == nil {
+			userName = u.Username
+		}
+	}
+	hostName := values["hostname"]
+	if hostName == "" {
+		hostName = host
+	}
+	portValue := values["port"]
+	if explicitPort {
+		portValue = port
+	}
+	if portValue == "" {
+		portValue = "22"
+	}
+	return resolvedTarget{HostName: hostName, Port: portValue, User: userName}, nil
+}
+
+func parseSSHConfigOutput(out string) map[string]string {
+	values := map[string]string{}
+	s := bufio.NewScanner(strings.NewReader(out))
+	for s.Scan() {
+		key, value, ok := strings.Cut(strings.TrimSpace(s.Text()), " ")
+		if ok {
+			values[strings.ToLower(key)] = strings.TrimSpace(value)
+		}
+	}
+	return values
+}
+
+func hostAllowed(host string, rules []config.SSHRule) bool {
+	if len(rules) == 0 {
+		return true
+	}
+	host = strings.ToLower(host)
+	for _, r := range rules {
+		ok, err := path.Match(strings.ToLower(r.Pattern), host)
+		if err == nil && ok {
+			return r.Action == "allow"
+		}
+	}
+	return false
+}
+
+func (p *Proxy) handleSession(channel ssh.Channel, requests <-chan *ssh.Request, innerUser string, explicitUser bool) {
+	defer channel.Close()
+	var pty bool
+	var started bool
+	env := map[string]string{}
+	for req := range requests {
+		switch req.Type {
+		case "pty-req":
+			pty = true
+			req.Reply(true, nil)
+		case "env":
+			var payload struct{ Name, Value string }
+			if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
+				req.Reply(false, nil)
+				continue
+			}
+			env[payload.Name] = payload.Value
+			req.Reply(true, nil)
+		case "window-change", "signal":
+			req.Reply(true, nil)
+		case "exec":
+			command, err := parseStringPayload(req.Payload)
+			if err != nil {
+				req.Reply(false, nil)
+				continue
+			}
+			host, explicitPort, target, err := p.targetFromEnv(env, innerUser, explicitUser)
+			if err != nil {
+				req.Reply(false, nil)
+				continue
+			}
+			req.Reply(true, nil)
+			started = true
+			p.runOuterSSH(channel, host, command, "", filteredEnv(env), pty, explicitUser, explicitPort, target)
+			return
+		case "shell":
+			host, explicitPort, target, err := p.targetFromEnv(env, innerUser, explicitUser)
+			if err != nil {
+				req.Reply(false, nil)
+				continue
+			}
+			req.Reply(true, nil)
+			started = true
+			p.runOuterSSH(channel, host, "", "", filteredEnv(env), pty, explicitUser, explicitPort, target)
+			return
+		case "subsystem":
+			subsystem, err := parseStringPayload(req.Payload)
+			if err != nil {
+				req.Reply(false, nil)
+				continue
+			}
+			host, explicitPort, target, err := p.targetFromEnv(env, innerUser, explicitUser)
+			if err != nil {
+				req.Reply(false, nil)
+				continue
+			}
+			req.Reply(true, nil)
+			started = true
+			p.runOuterSSH(channel, host, "", subsystem, filteredEnv(env), pty, explicitUser, explicitPort, target)
+			return
+		default:
+			req.Reply(false, nil)
+		}
+	}
+	if !started {
+		channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 1}))
+	}
+}
+
+func parseStringPayload(payload []byte) (string, error) {
+	if len(payload) < 4 {
+		return "", errors.New("short payload")
+	}
+	n := int(payload[0])<<24 | int(payload[1])<<16 | int(payload[2])<<8 | int(payload[3])
+	if n < 0 || len(payload) < 4+n {
+		return "", errors.New("short string payload")
+	}
+	return string(payload[4 : 4+n]), nil
+}
+
+func (p *Proxy) targetFromEnv(env map[string]string, innerUser string, explicitUser bool) (string, bool, resolvedTarget, error) {
+	host := env["SBX_SSH_TARGET"]
+	if host == "" {
+		return "", false, resolvedTarget{}, errors.New("missing SBX_SSH_TARGET")
+	}
+	port := env["SBX_SSH_PORT"]
+	explicitPort := port != "" && port != p.port
+	target, err := p.resolve(host, port, innerUser, explicitUser, explicitPort)
+	if err != nil {
+		return "", false, resolvedTarget{}, err
+	}
+	if !hostAllowed(target.HostName, p.rules) {
+		return "", false, resolvedTarget{}, fmt.Errorf("ssh host %q is not allowed", target.HostName)
+	}
+	return host, explicitPort, target, nil
+}
+
+func filteredEnv(env map[string]string) map[string]string {
+	out := make(map[string]string, len(env))
+	for k, v := range env {
+		if strings.HasPrefix(k, "SBX_SSH_") {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func (p *Proxy) runOuterSSH(channel ssh.Channel, host, remoteCommand, subsystem string, env map[string]string, pty, explicitUser, explicitPort bool, target resolvedTarget) {
+	args := []string{"-o", "BatchMode=yes"}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := env[k]
+		args = append(args, "-o", "SetEnv="+k+"="+v)
+	}
+	if pty {
+		args = append(args, "-tt")
+	} else {
+		args = append(args, "-T")
+	}
+	if subsystem != "" {
+		args = append(args, "-s")
+	}
+	if explicitUser {
+		args = append(args, "-l", target.User)
+	}
+	if explicitPort {
+		args = append(args, "-p", target.Port)
+	}
+	args = append(args, host)
+	if subsystem != "" {
+		args = append(args, subsystem)
+	} else if remoteCommand != "" {
+		args = append(args, remoteCommand)
+	}
+	cmd := exec.Command(p.realSSH, args...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		sendExit(channel, 1)
+		return
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		sendExit(channel, 1)
+		return
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		sendExit(channel, 1)
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		sendExit(channel, 1)
+		return
+	}
+	go func() { _, _ = io.Copy(stdin, channel); _ = stdin.Close() }()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = io.Copy(channel, stdout) }()
+	go func() { defer wg.Done(); _, _ = io.Copy(channel.Stderr(), stderr) }()
+	err = cmd.Wait()
+	_ = stdin.Close()
+	wg.Wait()
+	code := 0
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else {
+			code = 1
+		}
+	}
+	sendExit(channel, code)
+}
+
+func sendExit(channel ssh.Channel, code int) {
+	channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: uint32(code)}))
+}
+
+// Stop shuts down the embedded server and removes the injected files.
+func (p *Proxy) Stop() {
+	if p == nil {
+		return
+	}
+	select {
+	case <-p.done:
+	default:
+		close(p.done)
+	}
+	if p.listener != nil {
+		_ = p.listener.Close()
+		p.listener = nil
+	}
+	p.wg.Wait()
+	if p.Dir != "" {
+		_ = os.RemoveAll(p.Dir)
+		p.Dir = ""
+	}
+}

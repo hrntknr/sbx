@@ -8,17 +8,16 @@ import (
 
 	"github.com/hrntknr/sbx/internal/config"
 	"github.com/hrntknr/sbx/internal/k8s"
+	"github.com/hrntknr/sbx/internal/sshproxy"
 )
 
 type opts struct {
-	Config     string   `name:"config" short:"c" help:"config file path (default: ./sbx.yaml or ~/.sbx.yaml)" placeholder:"PATH"`
-	Profile    string   `name:"profile" help:"profile name (default: default)" placeholder:"NAME"`
-	Dump       bool     `name:"dump" hidden:"" help:"print the generated sandbox spec and exit"`
-	K8s        *bool    `name:"k8s" negatable:"" help:"enable/disable k8s proxy (overrides profile)"`
-	K8sConfig  *string  `name:"k8s-config" help:"override k8s.config (kubeconfig path)" placeholder:"PATH"`
-	K8sContext []string `name:"k8s-context" help:"override k8s.context (comma-separated, repeatable)" placeholder:"CTX" sep:","`
-	K8sMode    *string  `name:"k8s-mode" help:"override k8s.mode (rw|ro)" placeholder:"MODE"`
-	Command    []string `arg:"" optional:"" passthrough:"" help:"command to run inside the sandbox"`
+	Config  string   `name:"config" short:"c" help:"config file path (default: ./sbx.yaml or ~/.sbx.yaml)" placeholder:"PATH"`
+	Profile string   `name:"profile" help:"profile name (default: default)" placeholder:"NAME"`
+	Dump    bool     `name:"dump" hidden:"" help:"print the generated sandbox spec and exit"`
+	K8s     *bool    `name:"k8s" negatable:"" help:"enable/disable k8s proxy (overrides profile)"`
+	SSH     *bool    `name:"ssh" negatable:"" help:"enable/disable the ssh proxy (overrides profile)"`
+	Command []string `arg:"" optional:"" passthrough:"" help:"command to run inside the sandbox"`
 }
 
 func Run(rawArgs []string) int {
@@ -46,15 +45,11 @@ func Run(rawArgs []string) int {
 	expand := config.Expander(selected.Env)
 
 	if selected.K8s != nil && !c.Dump {
-		cfg := selected.K8s.Config
-		if cfg != "" {
-			cfg = expand(cfg)
-		}
-		mode, err := k8s.ParseMode(selected.K8s.Mode)
+		rules, err := k8sRules(selected.K8s.Rules)
 		if err != nil {
 			return failCode(err)
 		}
-		proxy, err := k8s.Start(cfg, selected.K8s.Contexts, mode)
+		proxy, err := k8s.Start(rules)
 		if err != nil {
 			return failCode(fmt.Errorf("k8s proxy: %w", err))
 		}
@@ -68,6 +63,24 @@ func Run(rawArgs []string) int {
 				{Action: "allow", Mode: "r", Path: proxy.Dir},
 			}, selected.Rules...)
 		}
+	}
+	if selected.SSH != nil && !c.Dump {
+		proxy, err := sshproxy.Start(sshproxy.Options{Rules: selected.SSH.Rules})
+		if err != nil {
+			return failCode(fmt.Errorf("ssh proxy: %w", err))
+		}
+		defer proxy.Stop()
+		if selected.Env == nil {
+			selected.Env = map[string]string{}
+		}
+		selected.Env["PATH"] = proxy.BinDir + string(os.PathListSeparator) + os.Getenv("PATH")
+		selected.Env["SSH_AUTH_SOCK"] = ""
+		sshRules := []config.Rule{{Action: "allow", Mode: "r", Path: proxy.Dir}}
+		if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
+			sshRules = append(sshRules, config.Rule{Action: "deny", Mode: "rw", Path: sock})
+		}
+		sshRules = append(sshRules, config.Rule{Action: "deny", Mode: "rw", Path: "~/.ssh"})
+		selected.Rules = append(append([]config.Rule{}, sshRules...), selected.Rules...)
 	}
 
 	env := config.EnvList(selected.Env, expand)
@@ -84,24 +97,33 @@ func Run(rawArgs []string) int {
 func applyCLIOverrides(p *config.Profile, c *opts) {
 	if c.K8s != nil && !*c.K8s {
 		p.K8s = nil
-		return
+	} else {
+		enable := c.K8s != nil && *c.K8s
+		if p.K8s == nil && enable {
+			p.K8s = &config.K8sProfile{}
+		}
 	}
-	enable := (c.K8s != nil && *c.K8s) || c.K8sConfig != nil || len(c.K8sContext) > 0 || c.K8sMode != nil
-	if p.K8s == nil && enable {
-		p.K8s = &config.K8sProfile{}
+
+	if c.SSH != nil && !*c.SSH {
+		p.SSH = nil
+	} else {
+		sshEnable := c.SSH != nil && *c.SSH
+		if p.SSH == nil && sshEnable {
+			p.SSH = &config.SSHProfile{}
+		}
 	}
-	if p.K8s == nil {
-		return
+}
+
+func k8sRules(rules []config.K8sRule) ([]k8s.Rule, error) {
+	out := make([]k8s.Rule, len(rules))
+	for i, rule := range rules {
+		mode, err := k8s.ParseMode(rule.Mode)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = k8s.Rule{Action: rule.Action, Mode: mode, Pattern: rule.Pattern}
 	}
-	if c.K8sConfig != nil {
-		p.K8s.Config = *c.K8sConfig
-	}
-	if len(c.K8sContext) > 0 {
-		p.K8s.Contexts = c.K8sContext
-	}
-	if c.K8sMode != nil {
-		p.K8s.Mode = *c.K8sMode
-	}
+	return out, nil
 }
 
 func failCode(err error) int {
