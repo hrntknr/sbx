@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.5.0](https://github.com/hrntknr/sbx/compare/sbx-v1.4.1...sbx-v1.5.0) (2026-05-07)
+
+
+### Features
+
+* add sandboxed ssh and k8s proxy rules ([#10](https://github.com/hrntknr/sbx/issues/10)) ([960a050](https://github.com/hrntknr/sbx/commit/960a050f4698493804b117b136bdad50b2a33192))
+
+
+### Bug Fixes
+
+* **k8s:** ignore unmatched rules ([bb843ef](https://github.com/hrntknr/sbx/commit/bb843ef3bed2a698d1bdc047abf0ab59768eeb3b))
+* **ssh:** preserve proxy port ([00b7d1a](https://github.com/hrntknr/sbx/commit/00b7d1a6c3314b85370b731e032fcb6a88ee2539))
+
 ## [1.4.1](https://github.com/hrntknr/sbx/compare/sbx-v1.4.0...sbx-v1.4.1) (2026-05-03)
 
 
