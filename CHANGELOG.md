@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/hrntknr/sbx/compare/sbx-v1.5.0...sbx-v1.5.1) (2026-05-07)
+
+
+### Bug Fixes
+
+* **ssh:** preserve interactive sessions ([d870476](https://github.com/hrntknr/sbx/commit/d87047623438bc563b14dc0d8ca400d0736d6bb1))
+
 ## [1.5.0](https://github.com/hrntknr/sbx/compare/sbx-v1.4.1...sbx-v1.5.0) (2026-05-07)
 
 
