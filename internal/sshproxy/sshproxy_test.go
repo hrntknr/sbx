@@ -92,13 +92,46 @@ func TestWriteInjectedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"exec '/usr/bin/ssh' -F '", "\"$@\""} {
+	for _, want := range []string{"exec '/usr/bin/ssh' -F '", "' -p '", "\"$@\""} {
 		if !strings.Contains(string(sshScript), want) {
 			t.Errorf("ssh script missing %q\n%s", want, sshScript)
 		}
 	}
-	if strings.Contains(string(sshConfig), "ProxyCommand") || strings.Contains(string(sshScript), "__sbx-ssh-connect") || strings.Contains(string(sshScript), "SBX_SSH_TARGET") {
+	if strings.Contains(string(sshConfig), "ProxyCommand") || strings.Contains(string(sshScript), "__sbx-ssh-connect") {
 		t.Errorf("injected files should not depend on sbx helper\nconfig:\n%s\nscript:\n%s", sshConfig, sshScript)
+	}
+}
+
+func TestInjectedSSHWrapperForcesProxyPort(t *testing.T) {
+	dir := t.TempDir()
+	fakeSSH := filepath.Join(dir, "real-ssh")
+	argsPath := filepath.Join(dir, "args")
+	if err := os.WriteFile(fakeSSH, []byte("#!/bin/sh\nfor arg do printf '<%s>\\n' \"$arg\"; done > "+shellQuote(argsPath)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := &Proxy{Dir: dir, BinDir: filepath.Join(dir, "bin"), realSSH: fakeSSH, sentinel: "nobody", port: "41521"}
+	if err := os.Mkdir(p.BinDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.writeInjectedFiles(); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join(p.BinDir, "ssh"), "-l", "git", "-p", "2222", "github.com")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(args)
+	for _, want := range []string{"<-F>", "<" + filepath.Join(dir, "config") + ">", "<-p>", "<41521>", "<-l>", "<git>", "<github.com>"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("wrapper args missing %q\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "<41521>") > strings.Index(got, "<2222>") {
+		t.Errorf("proxy port should be passed before user port so OpenSSH keeps proxy connection\n%s", got)
 	}
 }
 
