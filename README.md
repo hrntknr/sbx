@@ -82,26 +82,24 @@ rules:
 
 ### k8s
 
-When `k8s` is set on a profile (either `k8s: true` or a mapping), sbx starts a localhost HTTP proxy in front of the upstream Kubernetes API server(s) and writes a kubeconfig pointing at it. `KUBECONFIG` is set inside the sandbox, and the kubeconfig directory is auto-allowed for read. Empty `rules` means every source context is exposed read/write.
+When `k8s` is set on a profile (either `k8s: true` or a rule list), sbx starts a localhost HTTP proxy in front of the upstream Kubernetes API server(s) and writes a kubeconfig pointing at it. `KUBECONFIG` is set inside the sandbox, and the kubeconfig directory is auto-allowed for read. Empty rules means every source context is exposed read/write.
 
 ```yaml
 k8s:
-  rules:
-    - allow(r, prod-*)         # context globs; r blocks mutating requests
-    - allow(rw, dev)
-    - deny(rw, *)
+  - allow(r, prod-*)           # context globs; r blocks mutating requests
+  - allow(rw, dev)
+  - deny(rw, *)
 ```
 
 ### ssh
 
-When `ssh` is set on a profile (either `ssh: true` or a mapping), sbx starts a local SSH MITM proxy and injects a dummy `ssh` command at the front of `PATH`. The dummy command always runs OpenSSH with an sbx-managed ssh config that connects to the local proxy and passes the original target through `SetEnv`. The sandbox does not need access to private keys, ssh-agent sockets, or the outer ssh config.
+When `ssh` is set on a profile (either `ssh: true` or a rule list), sbx starts a local SSH MITM proxy and injects a dummy `ssh` command at the front of `PATH`. The dummy command always runs OpenSSH with an sbx-managed ssh config that connects to the local proxy and passes the original target through `SetEnv`. The sandbox does not need access to private keys, ssh-agent sockets, or the outer ssh config.
 
 The proxy resolves the real destination with the outer OpenSSH config, checks the resolved host against the host rules, then runs the outer `ssh` with `BatchMode=yes`. If a passphrase/password prompt would be required, the connection fails; unlock keys with `ssh-add` before running sbx.
 
 ```yaml
 ssh:
-  rules:
-    - allow(github.com)        # resolved HostName patterns; empty = all hosts
-    - allow(*.example.com)
-    - deny(*)
+  - allow(github.com)          # resolved HostName patterns; empty = all hosts
+  - allow(*.example.com)
+  - deny(*)
 ```

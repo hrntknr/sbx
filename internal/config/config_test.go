@@ -229,13 +229,12 @@ rules:
 	}
 }
 
-func TestLoadProfileK8sMapping(t *testing.T) {
+func TestLoadProfileK8sRules(t *testing.T) {
 	path := writeConfig(t, `
 name: k8s
 k8s:
-  rules:
-    - allow(r, my-ctx)
-    - deny(rw, *)
+  - allow(r, my-ctx)
+  - deny(rw, *)
 rules:
   - allow(rw, ${WORK_DIR})
 `)
@@ -303,13 +302,12 @@ rules:
 	}
 }
 
-func TestLoadProfileSSHMapping(t *testing.T) {
+func TestLoadProfileSSHRules(t *testing.T) {
 	path := writeConfig(t, `
 name: ssh
 ssh:
-  rules:
-    - allow(github.com)
-    - deny(*.internal)
+  - allow(github.com)
+  - deny(*.internal)
 rules:
   - allow(rw, ${WORK_DIR})
 `)

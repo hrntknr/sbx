@@ -62,7 +62,7 @@ type SSHProfile struct {
 // UnmarshalYAML accepts:
 //
 //	ssh: true              -> empty profile (defaults)
-//	ssh: { ... }           -> mapping with rules
+//	ssh: [ ... ]           -> rule list
 //
 // `ssh: false` is rejected; omit the field to disable.
 func (s *SSHProfile) UnmarshalYAML(node *yaml.Node) error {
@@ -76,17 +76,19 @@ func (s *SSHProfile) UnmarshalYAML(node *yaml.Node) error {
 		}
 		return nil
 	}
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("ssh: must be `true` or a mapping")
+	if node.Kind == yaml.SequenceNode {
+		return s.decodeRules(node)
 	}
-	var raw struct {
-		Rules scalarOrSlice `yaml:"rules"`
-	}
+	return fmt.Errorf("ssh: must be `true` or a rule list")
+}
+
+func (s *SSHProfile) decodeRules(node *yaml.Node) error {
+	var raw scalarOrSlice
 	if err := node.Decode(&raw); err != nil {
 		return err
 	}
-	rules := make([]SSHRule, len(raw.Rules))
-	for i, l := range raw.Rules {
+	rules := make([]SSHRule, len(raw))
+	for i, l := range raw {
 		r, err := ParseSSHRule(l)
 		if err != nil {
 			return fmt.Errorf("ssh.rules line %d: %w", i+1, err)
@@ -100,7 +102,7 @@ func (s *SSHProfile) UnmarshalYAML(node *yaml.Node) error {
 // UnmarshalYAML accepts:
 //
 //	k8s: true              -> empty profile (defaults)
-//	k8s: { ... }           -> mapping with config/rules
+//	k8s: [ ... ]           -> rule list
 //
 // `k8s: false` is rejected; omit the field to disable.
 func (k *K8sProfile) UnmarshalYAML(node *yaml.Node) error {
@@ -114,17 +116,19 @@ func (k *K8sProfile) UnmarshalYAML(node *yaml.Node) error {
 		}
 		return nil
 	}
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("k8s: must be `true` or a mapping")
+	if node.Kind == yaml.SequenceNode {
+		return k.decodeRules(node)
 	}
-	var raw struct {
-		Rules scalarOrSlice `yaml:"rules"`
-	}
+	return fmt.Errorf("k8s: must be `true` or a rule list")
+}
+
+func (k *K8sProfile) decodeRules(node *yaml.Node) error {
+	var raw scalarOrSlice
 	if err := node.Decode(&raw); err != nil {
 		return err
 	}
-	rules := make([]K8sRule, len(raw.Rules))
-	for i, l := range raw.Rules {
+	rules := make([]K8sRule, len(raw))
+	for i, l := range raw {
 		r, err := ParseK8sRule(l)
 		if err != nil {
 			return fmt.Errorf("k8s.rules line %d: %w", i+1, err)
