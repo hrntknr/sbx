@@ -136,6 +136,41 @@ func TestInjectedSSHWrapperForcesProxyPort(t *testing.T) {
 	}
 }
 
+func TestInjectedSSHWrapperBypassesProxyForConfigInspection(t *testing.T) {
+	dir := t.TempDir()
+	fakeSSH := filepath.Join(dir, "real-ssh")
+	argsPath := filepath.Join(dir, "args")
+	if err := os.WriteFile(fakeSSH, []byte("#!/bin/sh\nfor arg do printf '<%s>\\n' \"$arg\"; done > "+shellQuote(argsPath)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := &Proxy{Dir: dir, BinDir: filepath.Join(dir, "bin"), realSSH: fakeSSH, sentinel: "nobody", port: "41521"}
+	if err := os.Mkdir(p.BinDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.writeInjectedFiles(); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join(p.BinDir, "ssh"), "-G", "github.com")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(args)
+	for _, want := range []string{"<-G>", "<github.com>"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("wrapper args missing %q\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"<-F>", "<" + filepath.Join(dir, "config") + ">", "<-p>", "<41521>"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("config inspection should bypass proxy arg %q\n%s", unwanted, got)
+		}
+	}
+}
+
 func TestSSHConfigQuote(t *testing.T) {
 	cases := []struct {
 		in, out string
