@@ -21,11 +21,12 @@ type Rule struct {
 
 // Profile is a single resolved profile with parsed rules.
 type Profile struct {
-	Name  string
-	Rules []Rule
-	Env   map[string]string
-	K8s   *K8sProfile
-	SSH   *SSHProfile
+	Name   string
+	Rules  []Rule
+	Env    map[string]string
+	K8s    *K8sProfile
+	SSH    *SSHProfile
+	Docker *DockerProfile
 }
 
 // K8sProfile enables a kubectl proxy alongside the sandbox. Presence of the
@@ -40,6 +41,22 @@ type K8sProfile struct {
 // proxy. Pattern uses path.Match syntax: `*`, `?`, `[...]`. Mode is "rw" or
 // "r" and is applied to allowed contexts; deny rules ignore Mode.
 type K8sRule struct {
+	Action  string
+	Mode    string
+	Pattern string
+}
+
+// DockerProfile enables a Docker API proxy alongside the sandbox. Presence of
+// the profile means enabled; nil means disabled. Empty Rules means expose every
+// supported Docker context read/write, current-context first.
+type DockerProfile struct {
+	Rules []DockerRule
+}
+
+// DockerRule controls which source Docker contexts are exposed through the
+// proxy. Pattern uses path.Match syntax. Mode is "rw" or "r" and is applied to
+// allowed contexts; deny rules ignore Mode.
+type DockerRule struct {
 	Action  string
 	Mode    string
 	Pattern string
@@ -139,6 +156,46 @@ func (k *K8sProfile) decodeRules(node *yaml.Node) error {
 	return nil
 }
 
+// UnmarshalYAML accepts:
+//
+//	docker: true              -> empty profile (defaults)
+//	docker: [ ... ]           -> rule list
+//
+// `docker: false` is rejected; omit the field to disable.
+func (d *DockerProfile) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var v bool
+		if err := node.Decode(&v); err != nil {
+			return fmt.Errorf("docker: must be `true` or a rule list (got %q)", node.Value)
+		}
+		if !v {
+			return fmt.Errorf("docker: false is not supported; omit the field to disable")
+		}
+		return nil
+	}
+	if node.Kind == yaml.SequenceNode {
+		return d.decodeRules(node)
+	}
+	return fmt.Errorf("docker: must be `true` or a rule list")
+}
+
+func (d *DockerProfile) decodeRules(node *yaml.Node) error {
+	var raw scalarOrSlice
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	rules := make([]DockerRule, len(raw))
+	for i, l := range raw {
+		r, err := ParseDockerRule(l)
+		if err != nil {
+			return fmt.Errorf("docker.rules line %d: %w", i+1, err)
+		}
+		rules[i] = r
+	}
+	d.Rules = rules
+	return nil
+}
+
 // scalarOrSlice decodes a YAML scalar or sequence into []string.
 type scalarOrSlice []string
 
@@ -155,11 +212,12 @@ func (s *scalarOrSlice) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type rawProfile struct {
-	Name  string            `yaml:"name"`
-	Rules []string          `yaml:"rules"`
-	Env   map[string]string `yaml:"env"`
-	K8s   *K8sProfile       `yaml:"k8s"`
-	SSH   *SSHProfile       `yaml:"ssh"`
+	Name   string            `yaml:"name"`
+	Rules  []string          `yaml:"rules"`
+	Env    map[string]string `yaml:"env"`
+	K8s    *K8sProfile       `yaml:"k8s"`
+	SSH    *SSHProfile       `yaml:"ssh"`
+	Docker *DockerProfile    `yaml:"docker"`
 }
 
 // LoadProfile is a convenience wrapper that returns only the parsed rules of
@@ -205,7 +263,7 @@ func LoadSelectedProfile(path, profile string) (Profile, error) {
 		}
 		rules[i] = r
 	}
-	return Profile{Name: profile, Rules: rules, Env: raw.Env, K8s: raw.K8s, SSH: raw.SSH}, nil
+	return Profile{Name: profile, Rules: rules, Env: raw.Env, K8s: raw.K8s, SSH: raw.SSH, Docker: raw.Docker}, nil
 }
 
 // defaultProfile is used when no config file is present.
@@ -218,6 +276,9 @@ func defaultProfile() Profile {
 			{Action: "allow", Mode: "rw", Path: "~/.claude"},
 			{Action: "allow", Mode: "rw", Path: "~/.claude.json"},
 			{Action: "allow", Mode: "rw", Path: "~/.codex"},
+			{Action: "deny", Mode: "rw", Path: "~/.ssh"},
+			{Action: "deny", Mode: "rw", Path: "~/.docker"},
+			{Action: "deny", Mode: "rw", Path: "/var/run/docker.sock"},
 			{Action: "deny", Mode: "rw", Path: "~/.kube/config"},
 			{Action: "allow", Mode: "r", Path: "/"},
 		},
@@ -263,7 +324,7 @@ func selectProfile(data []byte, profile string) (rawProfile, error) {
 		if err != nil {
 			return rawProfile{}, err
 		}
-		if p.Name == "" && len(p.Rules) == 0 && len(p.Env) == 0 && p.K8s == nil && p.SSH == nil {
+		if p.Name == "" && len(p.Rules) == 0 && len(p.Env) == 0 && p.K8s == nil && p.SSH == nil && p.Docker == nil {
 			continue
 		}
 		name := p.Name
@@ -277,31 +338,48 @@ func selectProfile(data []byte, profile string) (rawProfile, error) {
 	return rawProfile{}, fmt.Errorf("profile %q not found", profile)
 }
 
+// ParseDockerRule parses "ACTION(MODE, PATTERN)" e.g. "allow(r, prod-*)".
+func ParseDockerRule(s string) (DockerRule, error) {
+	r, err := parseContextRule("docker", s)
+	if err != nil {
+		return DockerRule{}, err
+	}
+	return DockerRule(r), nil
+}
+
 // ParseK8sRule parses "ACTION(MODE, PATTERN)" e.g. "allow(r, prod-*)".
 func ParseK8sRule(s string) (K8sRule, error) {
+	r, err := parseContextRule("k8s", s)
+	if err != nil {
+		return K8sRule{}, err
+	}
+	return K8sRule(r), nil
+}
+
+func parseContextRule(kind, s string) (DockerRule, error) {
 	s = strings.TrimSpace(s)
 	open := strings.IndexByte(s, '(')
 	if open <= 0 || !strings.HasSuffix(s, ")") {
-		return K8sRule{}, fmt.Errorf("invalid k8s rule %q (expected ACTION(MODE, PATTERN))", s)
+		return DockerRule{}, fmt.Errorf("invalid %s rule %q (expected ACTION(MODE, PATTERN))", kind, s)
 	}
 	action := strings.ToLower(strings.TrimSpace(s[:open]))
 	if action != "allow" && action != "deny" {
-		return K8sRule{}, fmt.Errorf("invalid action %q (must be allow or deny)", action)
+		return DockerRule{}, fmt.Errorf("invalid action %q (must be allow or deny)", action)
 	}
 	inner := s[open+1 : len(s)-1]
 	comma := strings.Index(inner, ",")
 	if comma < 0 {
-		return K8sRule{}, fmt.Errorf("invalid k8s rule %q (missing comma)", s)
+		return DockerRule{}, fmt.Errorf("invalid %s rule %q (missing comma)", kind, s)
 	}
 	mode := strings.ToLower(strings.TrimSpace(inner[:comma]))
 	if mode != "rw" && mode != "r" {
-		return K8sRule{}, fmt.Errorf("invalid k8s mode %q (must be rw or r)", mode)
+		return DockerRule{}, fmt.Errorf("invalid %s mode %q (must be rw or r)", kind, mode)
 	}
 	pattern := strings.TrimSpace(inner[comma+1:])
 	if pattern == "" {
-		return K8sRule{}, fmt.Errorf("invalid k8s rule %q (empty pattern)", s)
+		return DockerRule{}, fmt.Errorf("invalid %s rule %q (empty pattern)", kind, s)
 	}
-	return K8sRule{Action: action, Mode: mode, Pattern: pattern}, nil
+	return DockerRule{Action: action, Mode: mode, Pattern: pattern}, nil
 }
 
 // ParseSSHRule parses "ACTION(PATTERN)" e.g. "allow(github.com)".

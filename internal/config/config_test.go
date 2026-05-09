@@ -87,6 +87,35 @@ func TestParseK8sRuleErrors(t *testing.T) {
 	}
 }
 
+func TestParseDockerRule(t *testing.T) {
+	cases := []struct {
+		in   string
+		want DockerRule
+	}{
+		{"allow(rw, default)", DockerRule{"allow", "rw", "default"}},
+		{"allow(r, prod-*)", DockerRule{"allow", "r", "prod-*"}},
+		{"deny(rw, *)", DockerRule{"deny", "rw", "*"}},
+	}
+	for _, c := range cases {
+		got, err := ParseDockerRule(c.in)
+		if err != nil {
+			t.Errorf("ParseDockerRule(%q): %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("ParseDockerRule(%q) = %+v, want %+v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestParseDockerRuleErrors(t *testing.T) {
+	for _, in := range []string{"allow(default)", "allow(ro, default)", "reject(rw, *)", "allow(r,)"} {
+		if _, err := ParseDockerRule(in); err == nil {
+			t.Errorf("ParseDockerRule(%q): expected error", in)
+		}
+	}
+}
+
 func TestParseSSHRule(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -329,6 +358,64 @@ rules:
 	}
 }
 
+func TestLoadProfileDockerBool(t *testing.T) {
+	path := writeConfig(t, `
+name: docker
+docker: true
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	p, err := LoadSelectedProfile(path, "docker")
+	if err != nil {
+		t.Fatalf("LoadSelectedProfile: %v", err)
+	}
+	if p.Docker == nil {
+		t.Fatalf("Docker should be enabled")
+	}
+	if len(p.Docker.Rules) != 0 {
+		t.Fatalf("Docker defaults wrong: %+v", p.Docker)
+	}
+}
+
+func TestLoadProfileDockerFalseRejected(t *testing.T) {
+	path := writeConfig(t, `
+name: docker
+docker: false
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	if _, err := LoadSelectedProfile(path, "docker"); err == nil {
+		t.Fatal("expected error for docker: false")
+	}
+}
+
+func TestLoadProfileDockerRules(t *testing.T) {
+	path := writeConfig(t, `
+name: docker
+docker:
+  - allow(r, prod-*)
+  - deny(rw, *)
+rules:
+  - allow(rw, ${WORK_DIR})
+`)
+	p, err := LoadSelectedProfile(path, "docker")
+	if err != nil {
+		t.Fatalf("LoadSelectedProfile: %v", err)
+	}
+	if p.Docker == nil {
+		t.Fatalf("Docker should be enabled")
+	}
+	want := []DockerRule{{"allow", "r", "prod-*"}, {"deny", "rw", "*"}}
+	if len(p.Docker.Rules) != len(want) {
+		t.Fatalf("Docker.Rules = %+v", p.Docker.Rules)
+	}
+	for i := range want {
+		if p.Docker.Rules[i] != want[i] {
+			t.Fatalf("Docker.Rules[%d] = %+v, want %+v", i, p.Docker.Rules[i], want[i])
+		}
+	}
+}
+
 func TestLoadSelectedProfileFallsBackToDefault(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -349,6 +436,9 @@ func TestLoadSelectedProfileFallsBackToDefault(t *testing.T) {
 		{Action: "allow", Mode: "rw", Path: "~/.claude"},
 		{Action: "allow", Mode: "rw", Path: "~/.claude.json"},
 		{Action: "allow", Mode: "rw", Path: "~/.codex"},
+		{Action: "deny", Mode: "rw", Path: "~/.ssh"},
+		{Action: "deny", Mode: "rw", Path: "~/.docker"},
+		{Action: "deny", Mode: "rw", Path: "/var/run/docker.sock"},
 		{Action: "deny", Mode: "rw", Path: "~/.kube/config"},
 		{Action: "allow", Mode: "r", Path: "/"},
 	}

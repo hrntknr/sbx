@@ -7,6 +7,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/hrntknr/sbx/internal/config"
+	"github.com/hrntknr/sbx/internal/dockerproxy"
 	"github.com/hrntknr/sbx/internal/k8s"
 	"github.com/hrntknr/sbx/internal/sshproxy"
 )
@@ -17,6 +18,7 @@ type opts struct {
 	Dump    bool     `name:"dump" hidden:"" help:"print the generated sandbox spec and exit"`
 	K8s     *bool    `name:"k8s" negatable:"" help:"enable/disable k8s proxy (overrides profile)"`
 	SSH     *bool    `name:"ssh" negatable:"" help:"enable/disable the ssh proxy (overrides profile)"`
+	Docker  *bool    `name:"docker" negatable:"" help:"enable/disable the docker proxy (overrides profile)"`
 	Command []string `arg:"" optional:"" passthrough:"" help:"command to run inside the sandbox"`
 }
 
@@ -75,12 +77,27 @@ func Run(rawArgs []string) int {
 		}
 		selected.Env["PATH"] = proxy.BinDir + string(os.PathListSeparator) + os.Getenv("PATH")
 		selected.Env["SSH_AUTH_SOCK"] = ""
-		sshRules := []config.Rule{{Action: "allow", Mode: "r", Path: proxy.Dir}}
-		if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
-			sshRules = append(sshRules, config.Rule{Action: "deny", Mode: "rw", Path: sock})
+		selected.Rules = append([]config.Rule{{Action: "allow", Mode: "r", Path: proxy.Dir}}, selected.Rules...)
+	}
+	if selected.Docker != nil && !c.Dump {
+		rules, err := dockerproxy.RulesFromConfig(selected.Docker.Rules)
+		if err != nil {
+			return failCode(err)
 		}
-		sshRules = append(sshRules, config.Rule{Action: "deny", Mode: "rw", Path: "~/.ssh"})
-		selected.Rules = append(append([]config.Rule{}, sshRules...), selected.Rules...)
+		proxy, err := dockerproxy.Start(rules)
+		if err != nil {
+			return failCode(fmt.Errorf("docker proxy: %w", err))
+		}
+		if proxy != nil {
+			defer proxy.Stop()
+			if selected.Env == nil {
+				selected.Env = map[string]string{}
+			}
+			selected.Env["DOCKER_CONFIG"] = proxy.Dir
+			selected.Env["DOCKER_HOST"] = ""
+			selected.Env["DOCKER_CONTEXT"] = ""
+			selected.Rules = append([]config.Rule{{Action: "allow", Mode: "rw", Path: proxy.Dir}}, selected.Rules...)
+		}
 	}
 
 	env := config.EnvList(selected.Env, expand)
@@ -110,6 +127,15 @@ func applyCLIOverrides(p *config.Profile, c *opts) {
 		sshEnable := c.SSH != nil && *c.SSH
 		if p.SSH == nil && sshEnable {
 			p.SSH = &config.SSHProfile{}
+		}
+	}
+
+	if c.Docker != nil && !*c.Docker {
+		p.Docker = nil
+	} else {
+		dockerEnable := c.Docker != nil && *c.Docker
+		if p.Docker == nil && dockerEnable {
+			p.Docker = &config.DockerProfile{}
 		}
 	}
 }

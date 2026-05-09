@@ -3,6 +3,7 @@
 package bubblewrap
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -136,6 +137,16 @@ func TestMountArgs(t *testing.T) {
 	if err := os.WriteFile(file, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	sock := filepath.Join(dir, "s.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	linkDir := filepath.Join(dir, "link")
+	if err := os.Symlink(dir, linkDir); err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
 		name        string
@@ -149,7 +160,9 @@ func TestMountArgs(t *testing.T) {
 		{"allow w", "allow", false, true, "/x", []string{"--bind-try", "/x", "/x"}},
 		{"deny dir", "deny", true, true, dir, []string{"--tmpfs", dir}},
 		{"deny file", "deny", true, true, file, []string{"--ro-bind", "/dev/null", file}},
-		{"deny missing", "deny", true, true, "/no/such/path", []string{"--ro-bind", "/dev/null", "/no/such/path"}},
+		{"deny missing", "deny", true, true, "/no/such/path", nil},
+		{"deny socket", "deny", true, true, sock, []string{"--ro-bind", "/dev/null", sock}},
+		{"deny socket via symlink", "deny", true, true, filepath.Join(linkDir, "s.sock"), []string{"--ro-bind", "/dev/null", sock}},
 	}
 	for _, c := range cases {
 		got := mountArgs(c.action, c.read, c.write, c.path)
