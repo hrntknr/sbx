@@ -184,8 +184,11 @@ func (p *Proxy) writeInjectedFiles() error {
 	}
 	sshPath := filepath.Join(p.BinDir, "ssh")
 	sshScript := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "-G" ]; then
+  exec %s "$@"
+fi
 exec %s -F %s -p %s "$@"
-`, shellQuote(p.realSSH), shellQuote(configPath), shellQuote(p.port))
+`, shellQuote(p.realSSH), shellQuote(p.realSSH), shellQuote(configPath), shellQuote(p.port))
 	return os.WriteFile(sshPath, []byte(sshScript), 0o700)
 }
 
