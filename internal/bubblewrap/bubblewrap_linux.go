@@ -105,7 +105,14 @@ func emitRule(r config.Rule, expand func(string) string) ([]string, error) {
 //	deny file → --ro-bind /dev/null (replace with empty file)
 func mountArgs(action string, read, write bool, p string) []string {
 	if action == "deny" {
-		if info, err := os.Stat(p); err == nil && info.IsDir() {
+		if resolved, rerr := filepath.EvalSymlinks(p); rerr == nil {
+			p = resolved
+		}
+		info, err := os.Lstat(p)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err == nil && info.IsDir() {
 			return []string{"--tmpfs", p}
 		}
 		return []string{"--ro-bind", "/dev/null", p}

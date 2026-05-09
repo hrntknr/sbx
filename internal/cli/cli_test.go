@@ -144,3 +144,21 @@ func TestApplyCLIOverridesSSHEnables(t *testing.T) {
 		t.Fatal("--ssh should enable SSH on profile without it")
 	}
 }
+
+func TestApplyCLIOverridesNoDockerDisables(t *testing.T) {
+	f := false
+	prof := config.Profile{Docker: &config.DockerProfile{Rules: []config.DockerRule{{Action: "allow", Mode: "rw", Pattern: "profile"}}}}
+	applyCLIOverrides(&prof, &opts{Docker: &f})
+	if prof.Docker != nil {
+		t.Fatalf("--no-docker should clear Docker, got %+v", prof.Docker)
+	}
+}
+
+func TestApplyCLIOverridesDockerEnables(t *testing.T) {
+	tr := true
+	prof := config.Profile{}
+	applyCLIOverrides(&prof, &opts{Docker: &tr})
+	if prof.Docker == nil {
+		t.Fatal("--docker should enable Docker on profile without it")
+	}
+}
