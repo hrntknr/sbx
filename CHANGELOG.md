@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.6.0](https://github.com/hrntknr/sbx/compare/sbx-v1.5.1...sbx-v1.6.0) (2026-05-09)
+
+
+### Features
+
+* add Docker proxy support ([#13](https://github.com/hrntknr/sbx/issues/13)) ([2fc3e01](https://github.com/hrntknr/sbx/commit/2fc3e01fd0e58806978c37b79df7366cee07149a))
+
+
+### Bug Fixes
+
+* **docker:** shorten proxy socket paths ([#15](https://github.com/hrntknr/sbx/issues/15)) ([577c4dc](https://github.com/hrntknr/sbx/commit/577c4dc28e1f58820077d21872717ef7bc3a96a6))
+* **ssh:** bypass proxy for config inspection ([40692ea](https://github.com/hrntknr/sbx/commit/40692ea2fa816fb55b7fc62fd88c5eebf4bc9158))
+
 ## [1.5.1](https://github.com/hrntknr/sbx/compare/sbx-v1.5.0...sbx-v1.5.1) (2026-05-07)
 
 
