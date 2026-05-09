@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +64,27 @@ func TestStartWithContextsDenyAllFailsClosed(t *testing.T) {
 	defer proxy.Stop()
 	if proxy.Dir == "" {
 		t.Fatal("disabled proxy should still provide an empty DOCKER_CONFIG dir")
+	}
+}
+
+func TestStartWithContextsUsesShortSocketPaths(t *testing.T) {
+	proxy, err := StartWithContexts([]SourceContext{{Name: "dev", Host: "unix:///tmp/dev.sock"}}, "dev", nil)
+	if err != nil {
+		t.Fatalf("StartWithContexts: %v", err)
+	}
+	defer proxy.Stop()
+
+	data, err := os.ReadFile(filepath.Join(proxy.Dir, "contexts", "meta", contextID("dev"), "meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta metaFile
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatal(err)
+	}
+	sock := strings.TrimPrefix(meta.Endpoints["docker"].Host, "unix://")
+	if len(sock) >= 100 {
+		t.Fatalf("socket path length = %d, want less than 100: %s", len(sock), sock)
 	}
 }
 

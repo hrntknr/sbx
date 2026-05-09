@@ -224,7 +224,7 @@ func (p *Proxy) start(resolved []resolvedContext) error {
 	}
 	assignConfigNames(resolved)
 	for i := range resolved {
-		resolved[i].Sock = filepath.Join(sockDir, contextID(resolved[i].Name)+".sock")
+		resolved[i].Sock = filepath.Join(sockDir, fmt.Sprintf("%d.sock", i))
 		if err := p.startOne(resolved[i]); err != nil {
 			return err
 		}
