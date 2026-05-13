@@ -7,6 +7,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 func TestExpandContexts(t *testing.T) {
@@ -191,9 +195,91 @@ current-context: dev
 	}
 }
 
+func TestLoadContextConfigReloadsKubeconfig(t *testing.T) {
+	path := t.TempDir() + "/config"
+	writeTokenKubeconfig(t, path, "https://127.0.0.1:65535", "old-token")
+	loading := &clientcmd.ClientConfigLoadingRules{ExplicitPath: path}
+	cfg, err := loadContextConfig(loading, "dev")
+	if err != nil {
+		t.Fatalf("loadContextConfig: %v", err)
+	}
+	if cfg.BearerToken != "old-token" {
+		t.Fatalf("first token = %q, want old-token", cfg.BearerToken)
+	}
+
+	writeTokenKubeconfig(t, path, "https://127.0.0.1:65535", "new-token")
+	cfg, err = loadContextConfig(loading, "dev")
+	if err != nil {
+		t.Fatalf("loadContextConfig after rewrite: %v", err)
+	}
+	if cfg.BearerToken != "new-token" {
+		t.Fatalf("second token = %q, want new-token", cfg.BearerToken)
+	}
+}
+
+func TestTransportConfigForRequestBustsAuthProviderCache(t *testing.T) {
+	cfg := &rest.Config{
+		Host: "https://127.0.0.1:65535",
+		AuthProvider: &clientcmdapi.AuthProviderConfig{
+			Name:   "oidc",
+			Config: map[string]string{"refresh-token": "refresh-token"},
+		},
+	}
+
+	first := transportConfigForRequest(cfg)
+	second := transportConfigForRequest(cfg)
+
+	if first == cfg || second == cfg {
+		t.Fatal("auth-provider config should be copied before changing the transport cache key")
+	}
+	if cfg.Host != "https://127.0.0.1:65535" {
+		t.Fatalf("original host = %q, want unchanged", cfg.Host)
+	}
+	if first.Host == second.Host {
+		t.Fatalf("hosts should differ to avoid reusing stale auth-provider config: %q", first.Host)
+	}
+	for _, got := range []string{first.Host, second.Host} {
+		if !strings.HasPrefix(got, cfg.Host+"#sbx-auth-provider-") {
+			t.Fatalf("host = %q, want sbx auth-provider cache suffix", got)
+		}
+	}
+}
+
+func TestTransportConfigForRequestLeavesStaticAuthConfig(t *testing.T) {
+	cfg := &rest.Config{Host: "https://127.0.0.1:65535", BearerToken: "token"}
+	if got := transportConfigForRequest(cfg); got != cfg {
+		t.Fatal("static auth config should not be copied")
+	}
+}
+
 func writeEmptyKubeconfig(t *testing.T) string {
 	t.Helper()
 	return writeKubeconfig(t, "apiVersion: v1\nkind: Config\n")
+}
+
+func writeTokenKubeconfig(t *testing.T, path, server, token string) {
+	t.Helper()
+	contents := `
+apiVersion: v1
+kind: Config
+clusters:
+- name: dev
+  cluster:
+    server: ` + server + `
+users:
+- name: dev
+  user:
+    token: ` + token + `
+contexts:
+- name: dev
+  context:
+    cluster: dev
+    user: dev
+current-context: dev
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeKubeconfig(t *testing.T, contents string) string {

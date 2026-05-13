@@ -10,7 +10,9 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
@@ -48,6 +50,8 @@ type resolvedContext struct {
 	name string
 	mode Mode
 }
+
+var authProviderCacheBust uint64
 
 // Mode controls request filtering applied at the embedded server.
 type Mode int
@@ -116,11 +120,7 @@ func Start(rules []Rule) (*Proxy, error) {
 	var entries []proxyEntry
 	for _, r := range resolved {
 		ctx := raw.Contexts[r.name]
-		cfg, err := clientcmd.NewNonInteractiveClientConfig(*raw, r.name, &clientcmd.ConfigOverrides{}, loading).ClientConfig()
-		if err != nil {
-			return nil, fmt.Errorf("context %q: %w", r.name, err)
-		}
-		h, err := contextHandler(cfg)
+		h, err := contextHandler(loading, r.name)
 		if err != nil {
 			return nil, fmt.Errorf("context %q: %w", r.name, err)
 		}
@@ -235,7 +235,38 @@ func contains(list []string, s string) bool {
 // contextHandler builds an UpgradeAwareHandler — same proxy implementation
 // kubectl proxy uses — so log streaming, exec/attach (SPDY/websocket upgrade),
 // and port-forward all pass through.
-func contextHandler(cfg *rest.Config) (http.Handler, error) {
+func contextHandler(loading clientcmd.ClientConfigLoader, contextName string) (http.Handler, error) {
+	if _, err := loadContextConfig(loading, contextName); err != nil {
+		return nil, err
+	}
+	return &contextProxyHandler{loading: loading, contextName: contextName}, nil
+}
+
+type contextProxyHandler struct {
+	loading     clientcmd.ClientConfigLoader
+	contextName string
+}
+
+func (h *contextProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	cfg, err := loadContextConfig(h.loading, h.contextName)
+	if err != nil {
+		errResponder{}.Error(w, r, err)
+		return
+	}
+	proxy, err := staticContextHandler(cfg)
+	if err != nil {
+		errResponder{}.Error(w, r, err)
+		return
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+func loadContextConfig(loading clientcmd.ClientConfigLoader, contextName string) (*rest.Config, error) {
+	overrides := &clientcmd.ConfigOverrides{CurrentContext: contextName}
+	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loading, overrides).ClientConfig()
+}
+
+func staticContextHandler(cfg *rest.Config) (http.Handler, error) {
 	target, err := url.Parse(cfg.Host)
 	if err != nil {
 		return nil, fmt.Errorf("parse server URL: %w", err)
@@ -246,11 +277,12 @@ func contextHandler(cfg *rest.Config) (http.Handler, error) {
 	if target.Path == "" {
 		target.Path = "/"
 	}
-	rt, err := rest.TransportFor(cfg)
+	transportCfg := transportConfigForRequest(cfg)
+	rt, err := rest.TransportFor(transportCfg)
 	if err != nil {
 		return nil, fmt.Errorf("transport: %w", err)
 	}
-	upgrade, err := upgradeTransport(cfg)
+	upgrade, err := upgradeTransport(transportCfg)
 	if err != nil {
 		return nil, fmt.Errorf("upgrade transport: %w", err)
 	}
@@ -259,6 +291,15 @@ func contextHandler(cfg *rest.Config) (http.Handler, error) {
 	h.UseRequestLocation = true
 	h.UseLocationHost = true
 	return h, nil
+}
+
+func transportConfigForRequest(cfg *rest.Config) *rest.Config {
+	if cfg.AuthProvider == nil {
+		return cfg
+	}
+	out := rest.CopyConfig(cfg)
+	out.Host += "#sbx-auth-provider-" + strconv.FormatUint(atomic.AddUint64(&authProviderCacheBust, 1), 10)
+	return out
 }
 
 func upgradeTransport(cfg *rest.Config) (utilproxy.UpgradeRequestRoundTripper, error) {
