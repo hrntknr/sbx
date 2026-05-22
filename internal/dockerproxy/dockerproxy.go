@@ -55,7 +55,10 @@ type resolvedContext struct {
 }
 
 type dockerConfig struct {
-	CurrentContext string `json:"currentContext,omitempty"`
+	CurrentContext string                     `json:"currentContext,omitempty"`
+	Auths          map[string]json.RawMessage `json:"auths,omitempty"`
+	CredsStore     string                     `json:"credsStore,omitempty"`
+	CredHelpers    map[string]string          `json:"credHelpers,omitempty"`
 }
 
 type metaFile struct {
@@ -80,35 +83,40 @@ func ParseMode(s string) (Mode, error) {
 }
 
 func Start(rules []Rule) (*Proxy, error) {
-	sources, current, err := LoadContexts("")
+	sources, current, sourceConfig, err := loadContexts("")
 	if err != nil {
 		return nil, err
 	}
 	if len(sources) == 0 {
 		return disabledProxy()
 	}
-	return StartWithContexts(sources, current, rules)
+	return startWithContexts(sources, current, rules, sourceConfig)
 }
 
 func LoadContexts(dockerDir string) ([]SourceContext, string, error) {
+	sources, current, _, err := loadContexts(dockerDir)
+	return sources, current, err
+}
+
+func loadContexts(dockerDir string) ([]SourceContext, string, dockerConfig, error) {
 	if dockerDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil, "", err
+			return nil, "", dockerConfig{}, err
 		}
 		dockerDir = filepath.Join(home, ".docker")
 	}
 	current := "default"
+	var cfg dockerConfig
 	if data, err := os.ReadFile(filepath.Join(dockerDir, "config.json")); err == nil {
-		var cfg dockerConfig
 		if err := json.Unmarshal(data, &cfg); err != nil {
-			return nil, "", fmt.Errorf("load docker config: %w", err)
+			return nil, "", dockerConfig{}, fmt.Errorf("load docker config: %w", err)
 		}
 		if cfg.CurrentContext != "" {
 			current = cfg.CurrentContext
 		}
 	} else if !os.IsNotExist(err) {
-		return nil, "", err
+		return nil, "", dockerConfig{}, err
 	}
 
 	var contexts []SourceContext
@@ -122,7 +130,7 @@ func LoadContexts(dockerDir string) ([]SourceContext, string, error) {
 	metaRoot := filepath.Join(dockerDir, "contexts", "meta")
 	entries, err := os.ReadDir(metaRoot)
 	if err != nil && !os.IsNotExist(err) {
-		return nil, "", err
+		return nil, "", dockerConfig{}, err
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -130,11 +138,11 @@ func LoadContexts(dockerDir string) ([]SourceContext, string, error) {
 		}
 		data, err := os.ReadFile(filepath.Join(metaRoot, e.Name(), "meta.json"))
 		if err != nil {
-			return nil, "", err
+			return nil, "", dockerConfig{}, err
 		}
 		var meta metaFile
 		if err := json.Unmarshal(data, &meta); err != nil {
-			return nil, "", fmt.Errorf("load docker context %s: %w", e.Name(), err)
+			return nil, "", dockerConfig{}, fmt.Errorf("load docker context %s: %w", e.Name(), err)
 		}
 		if ep, ok := meta.Endpoints["docker"]; ok && meta.Name != "" && !ep.SkipTLSVerify && !hasTLSMaterial(dockerDir, e.Name()) {
 			contexts = append(contexts, SourceContext{Name: meta.Name, Host: ep.Host})
@@ -144,10 +152,14 @@ func LoadContexts(dockerDir string) ([]SourceContext, string, error) {
 		current = envContext
 	}
 	sort.Slice(contexts, func(i, j int) bool { return contexts[i].Name < contexts[j].Name })
-	return contexts, current, nil
+	return contexts, current, cfg, nil
 }
 
 func StartWithContexts(sources []SourceContext, current string, rules []Rule) (*Proxy, error) {
+	return startWithContexts(sources, current, rules, dockerConfig{})
+}
+
+func startWithContexts(sources []SourceContext, current string, rules []Rule, sourceConfig dockerConfig) (*Proxy, error) {
 	resolved, err := Resolve(sources, current, rules)
 	if err != nil {
 		return nil, err
@@ -160,7 +172,7 @@ func StartWithContexts(sources []SourceContext, current string, rules []Rule) (*
 		return nil, err
 	}
 	p := &Proxy{Dir: dir}
-	if err := p.start(resolved); err != nil {
+	if err := p.start(resolved, sourceConfig); err != nil {
 		p.Stop()
 		return nil, err
 	}
@@ -217,7 +229,7 @@ func Resolve(sources []SourceContext, current string, rules []Rule) ([]resolvedC
 	return out, nil
 }
 
-func (p *Proxy) start(resolved []resolvedContext) error {
+func (p *Proxy) start(resolved []resolvedContext, sourceConfig dockerConfig) error {
 	sockDir := filepath.Join(p.Dir, "sockets")
 	if err := os.Mkdir(sockDir, 0o700); err != nil {
 		return err
@@ -229,7 +241,7 @@ func (p *Proxy) start(resolved []resolvedContext) error {
 			return err
 		}
 	}
-	return WriteDockerConfig(p.Dir, resolved)
+	return writeDockerConfig(p.Dir, resolved, sourceConfig)
 }
 
 func (p *Proxy) startOne(ctx resolvedContext) error {
@@ -253,8 +265,18 @@ func (p *Proxy) startOne(ctx resolvedContext) error {
 }
 
 func WriteDockerConfig(dir string, resolved []resolvedContext) error {
+	return writeDockerConfig(dir, resolved, dockerConfig{})
+}
+
+func writeDockerConfig(dir string, resolved []resolvedContext, sourceConfig dockerConfig) error {
 	assignConfigNames(resolved)
-	data, err := json.MarshalIndent(dockerConfig{CurrentContext: resolved[0].NameInConfig}, "", "  ")
+	cfg := dockerConfig{
+		CurrentContext: resolved[0].NameInConfig,
+		Auths:          sourceConfig.Auths,
+		CredsStore:     sourceConfig.CredsStore,
+		CredHelpers:    sourceConfig.CredHelpers,
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}

@@ -112,7 +112,7 @@ k8s:
 
 ### docker
 
-When `docker` is set on a profile (either `docker: true` or a rule list), sbx starts a Docker API proxy and writes a temporary `DOCKER_CONFIG` with one generated context per allowed source context. `DOCKER_CONFIG` is set inside the sandbox, and `DOCKER_HOST` / `DOCKER_CONTEXT` are cleared. The generated config/proxy directory is auto-allowed read/write. `~/.docker` and upstream Docker socket paths are not auto-denied; hide them with normal sandbox rules if needed.
+When `docker` is set on a profile (either `docker: true` or a rule list), sbx starts a Docker API proxy and writes a temporary `DOCKER_CONFIG` with one generated context per allowed source context. Registry auth settings (`auths`, `credsStore`, and `credHelpers`) are copied from the source Docker config. `DOCKER_CONFIG` is set inside the sandbox, and `DOCKER_HOST` / `DOCKER_CONTEXT` are cleared. The generated config/proxy directory is auto-allowed read/write. `~/.docker` and upstream Docker socket paths are not auto-denied; hide them with normal sandbox rules if needed.
 
 Supported source context endpoints:
 

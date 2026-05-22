@@ -167,6 +167,43 @@ func TestLoadContextsAndWriteDockerConfig(t *testing.T) {
 	}
 }
 
+func TestWriteDockerConfigPreservesRegistryAuthConfig(t *testing.T) {
+	outDir := t.TempDir()
+	resolved := []resolvedContext{{SourceContext: SourceContext{Name: "dev", Host: "unix:///tmp/dev.sock"}, Sock: filepath.Join(t.TempDir(), "dev.sock")}}
+	sourceConfig := dockerConfig{
+		Auths: map[string]json.RawMessage{
+			"registry.example.com": json.RawMessage(`{"auth":"token"}`),
+		},
+		CredsStore:  "pass",
+		CredHelpers: map[string]string{"ghcr.io": "ghcr"},
+	}
+
+	if err := writeDockerConfig(outDir, resolved, sourceConfig); err != nil {
+		t.Fatalf("writeDockerConfig: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(outDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg dockerConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	var auth map[string]string
+	if err := json.Unmarshal(cfg.Auths["registry.example.com"], &auth); err != nil {
+		t.Fatal(err)
+	}
+	if auth["auth"] != "token" {
+		t.Fatalf("auths = %+v, want registry auth preserved", auth)
+	}
+	if cfg.CredsStore != "pass" {
+		t.Fatalf("credsStore = %q, want pass", cfg.CredsStore)
+	}
+	if cfg.CredHelpers["ghcr.io"] != "ghcr" {
+		t.Fatalf("credHelpers[ghcr.io] = %q, want ghcr", cfg.CredHelpers["ghcr.io"])
+	}
+}
+
 func TestLoadContextsSynthesizesDefaultHost(t *testing.T) {
 	dockerDir := t.TempDir()
 	sources, current, err := LoadContexts(dockerDir)
