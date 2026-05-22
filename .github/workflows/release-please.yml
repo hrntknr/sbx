@@ -35,15 +35,23 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
+            asset_os: linux
+            asset_arch: x64
             archive: tar.gz
           - goos: linux
             goarch: arm64
+            asset_os: linux
+            asset_arch: arm64
             archive: tar.gz
           - goos: darwin
             goarch: amd64
+            asset_os: macos
+            asset_arch: x64
             archive: zip
           - goos: darwin
             goarch: arm64
+            asset_os: macos
+            asset_arch: arm64
             archive: zip
     steps:
       - uses: actions/checkout@v4
@@ -66,11 +74,11 @@ jobs:
 
       - name: Package assets
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          ASSET_OS: ${{ matrix.asset_os }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
           ARCHIVE: ${{ matrix.archive }}
         run: |
-          asset="sbx_${GOOS}_${GOARCH}"
+          asset="sbx_${ASSET_OS}_${ASSET_ARCH}"
           mkdir -p "dist/${asset}"
           cp dist/sbx "dist/${asset}/sbx"
           if [ "${ARCHIVE}" = "tar.gz" ]; then
@@ -83,9 +91,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          ASSET_OS: ${{ matrix.asset_os }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
           ARCHIVE: ${{ matrix.archive }}
         run: |
-          asset="sbx_${GOOS}_${GOARCH}"
+          asset="sbx_${ASSET_OS}_${ASSET_ARCH}"
           gh release upload "${TAG_NAME}" "dist/${asset}.${ARCHIVE}" --clobber

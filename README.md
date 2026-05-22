@@ -12,6 +12,12 @@ Run a command inside a configurable sandbox.
 go install github.com/hrntknr/sbx@latest
 ```
 
+With mise:
+
+```sh
+mise use -g github:hrntknr/sbx@latest
+```
+
 ## Usage
 
 ```sh
